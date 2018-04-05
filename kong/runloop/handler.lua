@@ -19,6 +19,7 @@ local constants   = require "kong.constants"
 local responses   = require "kong.tools.responses"
 local singletons  = require "kong.singletons"
 local certificate = require "kong.runloop.certificate"
+local tls         = require "kong.runloop.tls"
 
 
 local kong        = kong
@@ -105,6 +106,8 @@ local function build_router(db, version)
     if not service then
       return nil, "could not find service for route (" .. route.id .. "): " .. err
     end
+
+    service.ssl_ctx = tls.get_ssl_ctx_for_service(service)
 
     local r = {
       route   = route,
@@ -578,6 +581,11 @@ return {
 
         else
           balancer_data.read_timeout = 60000
+        end
+
+        local ssl_ctx = service.ssl_ctx
+        if ssl_ctx then
+          balancer_data.ssl_ctx = ssl_ctx
         end
       end
 

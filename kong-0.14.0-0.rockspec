@@ -114,6 +114,7 @@ build = {
     ["kong.runloop.handler"] = "kong/runloop/handler.lua",
     ["kong.runloop.certificate"] = "kong/runloop/certificate.lua",
     ["kong.runloop.plugins_iterator"] = "kong/runloop/plugins_iterator.lua",
+    ["kong.runloop.tls"] = "kong/runloop/tls.lua",
     ["kong.runloop.balancer"] = "kong/runloop/balancer.lua",
 
     ["kong.dao.errors"] = "kong/dao/errors.lua",
