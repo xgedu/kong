@@ -250,7 +250,7 @@ return {
         created_at timestamp
       );
 
-      CREATE TABLE ssl_servers_names(
+      CREATE TABLE IF NOT EXISTS ssl_servers_names(
         name text,
         ssl_certificate_id uuid,
         created_at timestamp,
@@ -504,7 +504,8 @@ return {
     up = [[
       ALTER TABLE upstreams DROP orderlist;
     ]],
-    down = function(_, _, dao) end  -- not implemented
+    down = function(_, _, dao) end,  -- not implemented
+    ignore_error = "orderlist was not found"
   },
   {
     name = "2017-11-07-192000_upstream_healthchecks",
@@ -513,7 +514,8 @@ return {
     ]],
     down = [[
       ALTER TABLE upstreams DROP healthchecks;
-    ]]
+    ]],
+    ignore_error = "Invalid column name healthchecks"
   },
   {
     name = "2017-10-27-134100_consistent_hashing_1",
@@ -528,20 +530,15 @@ return {
       ALTER TABLE upstreams DROP hash_fallback;
       ALTER TABLE upstreams DROP hash_on_header;
       ALTER TABLE upstreams DROP hash_fallback_header;
-    ]]
+    ]],
+    ignore_error = "Invalid column name"
   },
   {
     name = "2017-11-07-192100_upstream_healthchecks_2",
     up = function(_, _, dao)
-      local rows, err = dao.upstreams:find_all()
-      if err then
-        return err
-      end
-
-      local upstreams = require("kong.dao.schemas.upstreams")
-      local default = upstreams.fields.healthchecks.default
-
-      for _, row in ipairs(rows) do
+      local db = dao.db.new_db
+      local default = db.upstreams.schema.fields.healthchecks.default
+      for row in db.upstreams:each(10000) do
         if not row.healthchecks then
           local _, err = dao.upstreams:update({
             healthchecks = default,
@@ -557,16 +554,12 @@ return {
   {
     name = "2017-10-27-134100_consistent_hashing_2",
     up = function(_, _, dao)
-      local rows, err = dao.upstreams:find_all()
-      if err then
-        return err
-      end
-
-      for _, row in ipairs(rows) do
+      local db = dao.db.new_db
+      for row in db.upstreams:each(10000) do
         if not row.hash_on or not row.hash_fallback then
           row.hash_on = "none"
           row.hash_fallback = "none"
-          local _, err = dao.upstreams:update(row, { id = row.id })
+          local _, err = db.upstreams:update(row, { id = row.id })
           if err then
             return err
           end
@@ -764,6 +757,7 @@ return {
     down = [[
       ALTER TABLE upstreams DROP hash_on_cookie;
       ALTER TABLE upstreams DROP hash_on_cookie_path;
-    ]]
+    ]],
+    ignore_error = "Invalid column name hash_on_cookie",
   }
 }

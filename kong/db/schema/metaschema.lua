@@ -86,7 +86,7 @@ table.insert(field_schema, { keys     = { type = "record", fields = field_schema
 table.insert(field_schema, { values   = { type = "record", fields = field_schema } })
 table.insert(field_schema, { fields   = fields_array })
 
-local conditional_validators = {}
+local conditional_validators = { required = { type = "boolean" } }
 for _, field in ipairs(validators) do
   table.insert(conditional_validators, field)
 end
@@ -94,6 +94,7 @@ end
 local entity_checkers = {
   { at_least_one_of = { type = "array", elements = { type = "string" } } },
   { only_one_of     = { type = "array", elements = { type = "string" } } },
+  { distinct        = { type = "array", elements = { type = "string" } }, },
   { conditional     = {
       type = "record",
       fields = {

@@ -139,7 +139,7 @@ end
 
 
 return {
-  table = "upstreams",
+  name = "upstreams",
   primary_key = {"id"},
   fields = {
     id = {

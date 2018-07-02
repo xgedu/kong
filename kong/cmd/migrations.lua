@@ -29,9 +29,9 @@ end
 
 local function execute(args)
   local conf = assert(conf_loader(args.conf))
-  local db = DB.new(conf)
-  assert(db:init_connector())
-  local dao = assert(DAOFactory.new(conf, db))
+  local new_db = assert(DB.new(conf))
+  assert(new_db:init_connector())
+  local dao = assert(DAOFactory.new(conf, new_db))
 
   if args.command == "up" then
     assert(dao:run_migrations())
