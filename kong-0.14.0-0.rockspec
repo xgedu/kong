@@ -34,6 +34,7 @@ dependencies = {
   "lua-resty-healthcheck == 0.4.2",
   "lua-resty-cookie == 0.1.0",
   "lua-resty-mlcache == 2.2.0",
+  "lua-http == 0.3",
   -- external Kong plugins
   "kong-plugin-azure-functions ~> 0.1",
   "kong-plugin-zipkin ~> 0.0",

@@ -7,6 +7,7 @@
 --
 -- In the `access_by_lua` phase, it is responsible for retrieving the route being proxied by
 -- a consumer. Then it is responsible for loading the plugins to execute on this request.
+local http_tls    = require "http.tls"
 local ck          = require "resty.cookie"
 local meta        = require "kong.meta"
 local utils       = require "kong.tools.utils"
@@ -42,6 +43,7 @@ local DEBUG       = ngx.DEBUG
 local CACHE_ROUTER_OPTS = { ttl = 0 }
 local EMPTY_T = {}
 
+local default_ssl_ctx = http_tls.new_client_context()
 
 local router, router_version, router_err
 local api_router, api_router_version, api_router_err
@@ -534,7 +536,7 @@ return {
         port           = upstream_url_t.port, -- final target port
         try_count      = 0,                   -- retry counter
         tries          = {},                  -- stores info per try
-        -- ssl_ctx     = nil,                 -- custom SSL_CTX to use
+        ssl_ctx        = default_ssl_ctx,     -- custom SSL_CTX to use
         -- ip          = nil,                 -- final target IP address
         -- balancer    = nil,                 -- the balancer object, if any
         -- hostname    = nil,                 -- hostname of the final target IP
