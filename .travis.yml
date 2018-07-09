@@ -1,5 +1,5 @@
 dist: trusty
-sudo: false
+sudo: required
 
 language: java
 
@@ -10,12 +10,15 @@ notifications:
   email: false
 
 addons:
-  postgresql: "9.4"
+  postgresql: "9.5"
   apt:
     packages:
       - net-tools
       - libpcre3-dev
       - build-essential
+
+services:
+  - docker
 
 env:
   global:
@@ -30,16 +33,6 @@ env:
   matrix:
     - TEST_SUITE=lint
     - TEST_SUITE=unit
-    - TEST_SUITE=integration
-      OPENRESTY=$OPENRESTY_BASE
-    - TEST_SUITE=plugins
-      OPENRESTY=$OPENRESTY_BASE
-    - TEST_SUITE=integration
-      OPENRESTY=$OPENRESTY_LATEST
-      CASSANDRA=3.9
-    - TEST_SUITE=plugins
-      OPENRESTY=$OPENRESTY_LATEST
-      CASSANDRA=3.9
 
 before_install:
   - source .ci/setup_env.sh
@@ -52,7 +45,9 @@ script:
 
 deploy:
   if: tag =~ 0.
-  script: .ci/trigger-travis.sh --pro $TRAVIS_ACCESS_TOKEN
+  script: .ci/trigger-travis.sh $TRAVIS_ACCESS_TOKEN
+  env:
+    - TEST_SUITE=none
 
 cache:
   apt: true
