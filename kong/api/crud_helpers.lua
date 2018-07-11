@@ -80,21 +80,36 @@ function _M.find_plugin_by_filter(self, dao_factory, filter, helpers)
   end
 end
 
-function _M.find_consumer_by_username_or_id(self, dao_factory, helpers)
-  local rows, err = _M.find_by_id_or_field(dao_factory.consumers, {},
-                                           self.params.username_or_id, "username")
 
-  if err then
-    return helpers.yield_error(err)
+function _M.find_consumer_by_username_or_id(self, dao_factory, helpers)
+  local username_or_id = self.params.username_or_id
+  local db = assert(dao_factory.db.new_db)
+  local consumer, err
+  if utils.is_valid_uuid(username_or_id) then
+    consumer, err = db.consumers:select({ id = username_or_id })
+
+    if err then
+      return helpers.yield_error(err)
+    end
   end
+
+  if not consumer then
+    consumer, err = db.consumers:select_by_username(username_or_id)
+
+    if err then
+      return helpers.yield_error(err)
+    end
+  end
+
   self.params.username_or_id = nil
 
   -- We know username and id are unique, so if we have a row, it must be the only one
-  self.consumer = rows[1]
+  self.consumer = consumer
   if not self.consumer then
     return helpers.responses.send_HTTP_NOT_FOUND()
   end
 end
+
 
 function _M.find_upstream_by_name_or_id(self, dao_factory, helpers)
   local rows, err = _M.find_by_id_or_field(dao_factory.upstreams, {},
@@ -163,21 +178,11 @@ function _M.paginated_set(self, dao_collection, post_process)
     })
   end
 
-  local data
+  local data = setmetatable(rows, cjson.empty_array_mt)
 
-  if #rows == 0 then
-    -- FIXME: remove and stick to previous `empty_array_mt` metatable
-    -- assignment once https://github.com/openresty/lua-cjson/pull/16
-    -- is included in the OpenResty release we use.
-    data = cjson.empty_array
-
-  else
-    data = rows
-
-    if type(post_process) == "function" then
-      for i, row in ipairs(rows) do
-        data[i] = post_process(row)
-      end
+  if type(post_process) == "function" then
+    for i, row in ipairs(rows) do
+      data[i] = post_process(row)
     end
   end
 
@@ -245,6 +250,10 @@ function _M.put(params, dao_collection, post_process)
     -- If entity body has primary key, deal with update
     new_entity, err = dao_collection:update(params, params, {full = true})
     if not err then
+      if not new_entity then
+        return responses.send_HTTP_NOT_FOUND()
+      end
+
       return responses.send_HTTP_OK(post_process_row(new_entity, post_process))
     end
   end

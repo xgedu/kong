@@ -1,14 +1,23 @@
-DEV_ROCKS = "busted 2.0.rc12" "luacheck 0.20.0" "lua-llthreads2 0.1.4"
+OS := $(shell uname)
+
+DEV_ROCKS = "busted 2.0.rc12" "luacheck 0.20.0" "lua-llthreads2 0.1.5"
 BUSTED_ARGS ?= -v
 TEST_CMD ?= bin/busted $(BUSTED_ARGS)
+
+ifeq ($(OS), Darwin)
 OPENSSL_DIR ?= /usr/local/opt/openssl
+else
+OPENSSL_DIR ?= /usr
+endif
 
 .PHONY: install dev lint test test-integration test-plugins test-all
 
 install:
-	@luarocks make OPENSSL_DIR=$(OPENSSL_DIR)
+	@luarocks make OPENSSL_DIR=$(OPENSSL_DIR) CRYPTO_DIR=$(OPENSSL_DIR)
 
-dev: install
+dev:
+	-@luarocks remove kong
+	@luarocks make OPENSSL_DIR=$(OPENSSL_DIR) CRYPTO_DIR=$(OPENSSL_DIR)
 	@for rock in $(DEV_ROCKS) ; do \
 	  if luarocks list --porcelain $$rock | grep -q "installed" ; then \
 	    echo $$rock already installed, skipping ; \
@@ -32,3 +41,23 @@ test-plugins:
 
 test-all:
 	@$(TEST_CMD) spec/
+
+old-test:
+	@$(TEST_CMD) spec-old-api/01-unit
+
+old-test-integration:
+	@$(TEST_CMD) spec-old-api/02-integration
+
+old-test-plugins:
+	@$(TEST_CMD) spec-old-api/03-plugins
+
+old-test-all:
+	@$(TEST_CMD) spec-old-api/
+
+pdk-phase-checks:
+	rm -f t/phase_checks.stats
+	rm -f t/phase_checks.report
+	PDK_PHASE_CHECKS_LUACOV=1 prove -I. t/01*/*/00-phase*.t
+	luacov -c t/phase_checks.luacov
+	grep "ngx\\." t/phase_checks.report
+	grep "check_" t/phase_checks.report

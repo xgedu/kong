@@ -24,6 +24,7 @@ Consult the Table of Contents below, and jump to the desired section.
     - [Static linting](#static-linting)
     - [Writing tests](#writing-tests)
     - [Writing performant code](#writing-performant-code)
+  - [Contributor T-shirt](#contributor-t-shirt)
 - [Code style](#code-style)
 
 
@@ -33,15 +34,15 @@ Consult the Table of Contents below, and jump to the desired section.
 
 If you are a Kong Enterprise customer, contact the Enterprise Support channels
 by opening an Enterprise support ticket on
-[https://support.mashape.com](https://support.mashape.com/).
+[https://support.konghq.com](https://support.konghq.com/).
 
 If you are experiencing a P1 issue, please call the [24/7 Enterprise Support
-phone line](https://support.mashape.com/hc/en-us/articles/115004921808-Telephone-Support)
+phone line](https://support.konghq.com/hc/en-us/articles/115004921808-Telephone-Support)
 for immediate assistance, as published in the Customer Success Reference Guide.
 
 If you are interested in becoming a Kong Enterprise customer, please visit
-https://www.mashape.com/enterprise/ or contact us at
-[sales@mashape.com](mailto:sales@mashape.com).
+https://konghq.com/kong-enterprise-edition/ or contact us at
+[sales@konghq.com](mailto:sales@konghq.com).
 
 [Back to TOC](#table-of-contents)
 
@@ -51,13 +52,14 @@ https://www.mashape.com/enterprise/ or contact us at
 There are several channels where you can get answers from the community
 or the maintainers of this project:
 
-- The mailing list, hosted on the [konglayer Google
-  Group](https://groups.google.com/forum/#!forum/konglayer) for asynchronous
-  and lengthy chatter
-- Gitter, for faster, but more ephemeral conversations. The room is
-  hosted at https://gitter.im/Mashape/kong
-- The IRC channel, registered on freenode as [#kong
-  ](https://webchat.freenode.net/?channels=kong)
+- Our public forum, [Kong Nation](https://discuss.konghq.com), is great for
+  asking questions, giving advice, and staying up-to-date with the latest
+  announcements. Kong Nation is frequented by Kong maintainers.
+- Two chat channels are used by the community, but are rarely visited by Kong
+  maintainers:
+  - [Gitter](https://gitter.im/Kong/kong)
+  - IRC, registered on freenode as
+    [#kong](https://webchat.freenode.net/?channels=kong)
 
 **Please avoid opening GitHub issues for general questions or help**, as those
 should be reserved for actual bug reports. The Kong community is welcoming and
@@ -68,7 +70,7 @@ more than willing to assist you on those channels!
 
 ## Where to report bugs?
 
-Feel free to [submit an issue](https://github.com/Mashape/kong/issues/new) on
+Feel free to [submit an issue](https://github.com/Kong/kong/issues/new) on
 the GitHub repository, we would be grateful to hear about it! Please make sure
 to respect the GitHub issue template, and include:
 
@@ -93,7 +95,7 @@ make without coding:
 - Reporting a bug (see the [report bugs](#where-to-report-bugs) section)
 - Helping other members of the community on the support channels
 - Fixing a typo in the code
-- Fixing a typo in the documentation at https://getkong.org (see
+- Fixing a typo in the documentation at https://docs.konghq.com (see
   the [documentation contribution](#improving-the-documentation) section)
 - Providing your feedback on the proposed features and designs
 - Reviewing Pull Requests
@@ -106,12 +108,12 @@ patch](#submitting-a-patch) section.
 
 ### Improving the documentation
 
-The documentation hosted at https://getkong.org is open source and built with
-[Jekyll](https://jekyllrb.com/). You are welcome to propose changes to it
+The documentation hosted at https://docs.konghq.com is open source and built
+with [Jekyll](https://jekyllrb.com/). You are welcome to propose changes to it
 (correct typos, add examples or clarifications...)!
 
 The repository is also hosted on GitHub at:
-https://github.com/Mashape/getkong.org/
+https://github.com/Kong/docs.konghq.com/
 
 To run and test your changes locally, follow the installation instructions in
 its README.md. You will need Ruby, Node.js (for npm), and Python 2.7 on your
@@ -140,26 +142,20 @@ will be pushed into separate repositories in the foreseeable future.
 
 If you wish to write a new plugin for your own needs, you should start by
 reading the [Plugin Development
-Guide](https://getkong.org/docs/latest/plugin-development).
+Guide](https://docs.konghq.com/latest/plugin-development).
 
 If you already wrote a plugin, and are thinking about making it available to
 the community, we strongly encourage you to host it on a publicly available
 repository (like GitHub), and to distribute it via LuaRocks. A good resource on
 how to do so is the [Distribution
-Section](https://getkong.org/docs/latest/plugin-development/distribution/#distribute-your-plugin)
+Section](https://docs.konghq.com/latest/plugin-development/distribution/#distribute-your-plugin)
 of the Plugin Development Guide.
 
-To give visibility to your plugin, we advise that you post an announcement
-thread on the [mailing
-list](https://groups.google.com/forum/#!forum/konglayer). A good title for such
-an announcement would be something like:
-
-```
-[ANN] Community Plugin - [plugin name] [plugin version]
-```
+To give visibility to your plugin, we advise that you create a post in the
+Announcements category of [Kong Nation](https://discuss.konghq.com/)!
 
 In the foreseeable future, we will also include a "Community Plugins" section
-to the online [Plugins Gallery](https://getkong.org/plugins/), and we will
+to the online [Plugins Gallery](https://docs.konghq.com/plugins/), and we will
 improve how plugins are distributed and installed on Kong nodes. Stay tuned!
 :wink:
 
@@ -201,9 +197,11 @@ you are probably the one in need of it. You must be prepared to apply changes
 to it if necessary.
 
 If your Pull Request was accepted, congratulations! You are now an official
-contributor of Kong. Your change will be included in the subsequent release
-Changelog, and we will not forget to include your name if you are an external
-contributor. :wink:
+contributor of Kong. Get in touch with us to receive your very own
+[Contributor T-shirt](#contributor-t-shirt)!
+
+Your change will be included in the subsequent release Changelog, and we will
+not forget to include your name if you are an external contributor. :wink:
 
 [Back to TOC](#table-of-contents)
 
@@ -448,7 +446,7 @@ assert.same(t1, t2)
 
 #### Writing performant code
 
-We write code for the [LuaJIT](https://github.com/Mashape/kong/issues/new)
+We write code for the [LuaJIT](https://github.com/Kong/kong/issues/new)
 interpreter, **not** Lua-PUC. As such, you should follow the LuaJIT best
 practices:
 
@@ -512,6 +510,21 @@ And finally, most importantly: use your best judgement to design an
 efficient algorithm. Doing so will always be more performant than a
 poorly-designed algorithm, even following all the performance tricks of the
 language you are using. :smile:
+
+[Back to TOC](#table-of-contents)
+
+
+### Contributor T-shirt
+
+If your Pull Request to [Kong/kong](https://github.com/Kong/kong) was accepted,
+congratulations, you are eligible to receive the very special Contributor
+T-shirt! Go ahead and fill-out the [Contributors Submissions
+form](https://goo.gl/forms/5w6mxLaE4tz2YM0L2).
+
+Proudly wear your T-shirt and show it to us by tagging
+[@thekonginc](https://twitter.com/thekonginc) on Twitter!
+
+![Kong Contributor T-shirt](https://konghq.com/wp-content/uploads/2018/04/100-contributor-t-shirt-1024x768.jpg)
 
 [Back to TOC](#table-of-contents)
 
@@ -597,19 +610,6 @@ local max_len = 100
 local MAX_LEN = 100
 ```
 
-When assigning several variables on consecutive lines, **do** align their
-assignment operator:
-
-```lua
--- bad
-local str = "world"
-local my_value = "hello"
-
--- good
-local str      = "world"
-local my_value = "hello"
-```
-
 [Back to code style TOC](#table-of-contents---code-style)
 
 
@@ -639,23 +639,6 @@ local t = {foo="hello",bar="world"}
 
 -- good
 local t = { foo = "hello", bar = "world" }
-```
-
-When using the constructor syntax on multiple lines, **do** align the
-assignments:
-
-```lua
--- bad
-local t = {
-  some_key = "hello",
-  some_other_key = "world",
-}
-
--- good
-local t = {
-  some_key       = "hello",
-  some_other_key = "world",
-}
 ```
 
 [Back to code style TOC](#table-of-contents---code-style)

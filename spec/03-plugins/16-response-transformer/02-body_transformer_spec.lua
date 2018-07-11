@@ -5,17 +5,17 @@ describe("Plugin: response-transformer", function()
   describe("transform_json_body()", function()
     describe("add", function()
       local conf = {
-        remove = {
-          json = {}
+        remove   = {
+          json   = {}
         },
-        replace = {
-          json = {}
+        replace  = {
+          json   = {}
         },
-        add = {
-          json = {"p1:v1", "p3:value:3", "p4:\"v1\""}
+        add      = {
+          json   = {"p1:v1", "p3:value:3", "p4:\"v1\""}
         },
-        append = {
-          json = {}
+        append   = {
+          json   = {}
         },
       }
       it("parameter", function()
@@ -34,17 +34,17 @@ describe("Plugin: response-transformer", function()
 
     describe("append", function()
       local conf = {
-        remove = {
-          json = {}
+        remove   = {
+          json   = {}
         },
-        replace = {
-          json = {}
+        replace  = {
+          json   = {}
         },
-        add = {
-          json = {}
+        add      = {
+          json   = {}
         },
-        append = {
-          json = {"p1:v1", "p3:\"v1\""}
+        append   = {
+          json   = {"p1:v1", "p3:\"v1\""}
         },
       }
       it("new key:value if key does not exists", function()
@@ -69,17 +69,17 @@ describe("Plugin: response-transformer", function()
 
     describe("remove", function()
       local conf = {
-        remove = {
-          json = {"p1", "p2"}
+        remove   = {
+          json   = {"p1", "p2"}
         },
-        replace = {
-          json = {}
+        replace  = {
+          json   = {}
         },
-        add = {
-          json = {}
+        add      = {
+          json   = {}
         },
-        append = {
-          json = {}
+        append   = {
+          json   = {}
         }
       }
       it("parameter", function()
@@ -91,17 +91,17 @@ describe("Plugin: response-transformer", function()
 
     describe("replace", function()
       local conf = {
-        remove = {
-          json = {}
+        remove   = {
+          json   = {}
         },
-        replace = {
-          json = {"p1:v2", "p2:\"v2\""}
+        replace  = {
+          json   = {"p1:v2", "p2:\"v2\""}
         },
-        add = {
-          json = {}
+        add      = {
+          json   = {}
         },
-        append = {
-          json = {}
+        append   = {
+          json   = {}
         }
       }
       it("parameter if it exists", function()
@@ -126,17 +126,17 @@ describe("Plugin: response-transformer", function()
 
     describe("remove, replace, add, append", function()
       local conf = {
-        remove = {
-          json = {"p1"}
+        remove   = {
+          json   = {"p1"}
         },
-        replace = {
-          json = {"p2:v2"}
+        replace  = {
+          json   = {"p2:v2"}
         },
-        add = {
-          json = {"p3:v1"}
+        add      = {
+          json   = {"p3:v1"}
         },
-        append = {
-          json = {"p3:v2"}
+        append   = {
+          json   = {"p3:v2"}
         },
       }
       it("combination", function()
@@ -162,49 +162,50 @@ describe("Plugin: response-transformer", function()
   end)
 
   describe("leave body alone", function()
-    -- Related to issue https://github.com/Mashape/kong/issues/1207 
+    -- Related to issue https://github.com/Kong/kong/issues/1207
     -- unit test to check body remains unaltered
 
     local old_ngx, handler
 
     setup(function()
-      old_ngx = ngx
-      _G.ngx = {       -- busted requires explicit _G to access the global environment
-        log = function() end,
+      old_ngx  = ngx
+      _G.ngx   = {       -- busted requires explicit _G to access the global environment
+        log    = function() end,
         header = {
-            ["content-type"] = "application/json",
-          },
-        arg = {},
-        ctx = {
-            buffer = "",
-          },
+          ["content-type"] = "application/json",
+        },
+        arg    = {},
+        ctx    = {
+          buffer = "",
+        },
       }
       handler = require("kong.plugins.response-transformer.handler")
       handler:new()
     end)
 
     teardown(function()
+      -- luacheck: globals ngx
       ngx = old_ngx
     end)
 
     it("body remains unaltered if no transforms have been set", function()
       -- only a header transform, no body changes
-      local conf = {
-        remove = {
+      local conf  = {
+        remove    = {
           headers = {"h1", "h2", "h3"},
-          json = {}
+          json    = {}
         },
-        add = {
+        add       = {
           headers = {},
-          json = {},
+          json    = {},
         },
-        append = {
+        append    = {
           headers = {},
-          json = {},
+          json    = {},
         },
-        replace = {
+        replace   = {
           headers = {},
-          json = {},
+          json    = {},
         },
       }
       local body = [[
@@ -229,7 +230,7 @@ describe("Plugin: response-transformer", function()
     }
 
   ]]
-      
+
       ngx.arg[1] = body
       handler:body_filter(conf)
       local result = ngx.arg[1]
@@ -237,7 +238,7 @@ describe("Plugin: response-transformer", function()
       ngx.arg[2] = true -- end of body marker
       handler:body_filter(conf)
       result = result .. ngx.arg[1]
-      
+
       -- body filter should not execute, it would parse and re-encode the json, removing
       -- the whitespace. So check equality to make sure whitespace is still there, and hence
       -- body was not touched.

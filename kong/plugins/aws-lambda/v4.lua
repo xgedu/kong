@@ -3,7 +3,7 @@
 
 local resty_sha256 = require "resty.sha256"
 local pl_string = require "pl.stringx"
-local crypto = require "crypto"
+local openssl_hmac = require "openssl.hmac"
 
 local ALGORITHM = "AWS4-HMAC-SHA256"
 
@@ -14,8 +14,8 @@ for i = 0, 255 do
   CHAR_TO_HEX[char] = hex
 end
 
-local function hmac(key, msg)
-  return crypto.hmac.digest("sha256", msg, key, true)
+local function hmac(secret, data)
+  return openssl_hmac.new(secret, "sha256"):final(data)
 end
 
 local function hash(str)
@@ -32,12 +32,6 @@ local function percent_encode(char)
   return string.format("%%%02X", string.byte(char))
 end
 
-local function urldecode(str)
-  return (str:gsub("%%(%x%x)", function(c) 
-    return string.char(tonumber(c, 16))
-  end))
-end
-
 local function canonicalise_path(path)
   local segments = {}
   for segment in path:gmatch("/([^/]*)") do
@@ -47,7 +41,8 @@ local function canonicalise_path(path)
       -- intentionally discards components at top level
       segments[#segments] = nil
     else
-      segments[#segments+1] = urldecode(segment):gsub("[^%w%-%._~]", percent_encode)
+      segments[#segments+1] = ngx.unescape_uri(segment):gsub("[^%w%-%._~]",
+                                                             percent_encode)
     end
   end
   local len = #segments
@@ -67,8 +62,8 @@ end
 local function canonicalise_query_string(query)
   local q = {}
   for key, val in query:gmatch("([^&=]+)=?([^&]*)") do
-    key = urldecode(key):gsub("[^%w%-%._~]", percent_encode)
-    val = urldecode(val):gsub("[^%w%-%._~]", percent_encode)
+    key = ngx.unescape_uri(key):gsub("[^%w%-%._~]", percent_encode)
+    val = ngx.unescape_uri(val):gsub("[^%w%-%._~]", percent_encode)
     q[#q+1] = key .. "=" .. val
   end
   table.sort(q)

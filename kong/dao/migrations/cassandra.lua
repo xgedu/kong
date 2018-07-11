@@ -1,3 +1,9 @@
+local log = require "kong.cmd.utils.log"
+local cassandra = require "cassandra"
+local utils = require "kong.tools.utils"
+
+local migration_helpers = require "kong.dao.migrations.helpers"
+
 return {
   {
     name = "2015-01-12-175310_skeleton",
@@ -26,20 +32,33 @@ return {
         return "invalid replication_strategy class"
       end
 
-      -- Format final keyspace creation query
-      local keyspace_str = string.format([[
-        CREATE KEYSPACE IF NOT EXISTS "%s"
-          WITH REPLICATION = {'class': '%s'%s};
-      ]], keyspace_name, strategy, strategy_properties)
-
-      local res, err = db:query(keyspace_str, nil, nil, nil, true)
-      if not res then
-        return err
-      end
-
+      -- Test keyspace existence by trying to switch to it. The keyspace
+      -- could have been created by a DBA or could not exist.
       local ok, err = db:coordinator_change_keyspace(keyspace_name)
       if not ok then
-        return err
+        -- The keyspace either does not exist or we do not have access
+        -- to it. Let's try to create it.
+        log("could not switch to %s keyspace (%s), attempting to create it",
+            keyspace_name, err)
+
+        local keyspace_str = string.format([[
+          CREATE KEYSPACE IF NOT EXISTS "%s"
+            WITH REPLICATION = {'class': '%s'%s};
+        ]], keyspace_name, strategy, strategy_properties)
+
+        local res, err = db:query(keyspace_str, nil, nil, nil, true)
+        if not res then
+          -- keyspace creation failed (no sufficients permissions or
+          -- any other reason)
+          return err
+        end
+
+        log("successfully created %s keyspace", keyspace_name)
+
+        local ok, err = db:coordinator_change_keyspace(keyspace_name)
+        if not ok then
+          return err
+        end
       end
 
       local res, err = db:query [[
@@ -224,7 +243,7 @@ return {
   {
     name = "2016-12-14-172100_move_ssl_certs_to_core",
     up = [[
-      CREATE TABLE ssl_certificates(
+      CREATE TABLE IF NOT EXISTS ssl_certificates(
         id uuid PRIMARY KEY,
         cert text,
         key text ,
@@ -319,7 +338,7 @@ return {
     up = function(db, kong_config)
       local keyspace_name = kong_config.cassandra_keyspace
 
-      if db.release_version < 3 then
+      if db.major_version_n < 3 then
         local rows, err = db:query([[
           SELECT *
           FROM system.schema_columns
@@ -352,7 +371,7 @@ return {
         end
 
         for i = 1, #rows do
-          if rows[i].options and 
+          if rows[i].options and
              rows[i].options.target == "request_host" or
              rows[i].options.target == "request_path" then
 
@@ -398,6 +417,11 @@ return {
   {
     name = "2017-01-24-132600_upstream_timeouts_2",
     up = function(_, _, dao)
+      local ok, err = dao.db:wait_for_schema_consensus()
+      if not ok then
+        return "failed to wait for schema consensus: " .. err
+      end
+
       local rows, err = dao.db:query([[
         SELECT * FROM apis;
       ]])
@@ -471,7 +495,275 @@ return {
   {
     name = "2017-05-19-173100_remove_nodes_table",
     up = [[
+      DROP INDEX IF EXISTS nodes_cluster_listening_address_idx;
       DROP TABLE nodes;
     ]],
   },
+  {
+    name = "2017-07-28-225000_balancer_orderlist_remove",
+    up = [[
+      ALTER TABLE upstreams DROP orderlist;
+    ]],
+    down = function(_, _, dao) end  -- not implemented
+  },
+  {
+    name = "2017-11-07-192000_upstream_healthchecks",
+    up = [[
+      ALTER TABLE upstreams ADD healthchecks text;
+    ]],
+    down = [[
+      ALTER TABLE upstreams DROP healthchecks;
+    ]]
+  },
+  {
+    name = "2017-10-27-134100_consistent_hashing_1",
+    up = [[
+      ALTER TABLE upstreams ADD hash_on text;
+      ALTER TABLE upstreams ADD hash_fallback text;
+      ALTER TABLE upstreams ADD hash_on_header text;
+      ALTER TABLE upstreams ADD hash_fallback_header text;
+    ]],
+    down = [[
+      ALTER TABLE upstreams DROP hash_on;
+      ALTER TABLE upstreams DROP hash_fallback;
+      ALTER TABLE upstreams DROP hash_on_header;
+      ALTER TABLE upstreams DROP hash_fallback_header;
+    ]]
+  },
+  {
+    name = "2017-11-07-192100_upstream_healthchecks_2",
+    up = function(_, _, dao)
+      local rows, err = dao.upstreams:find_all()
+      if err then
+        return err
+      end
+
+      local upstreams = require("kong.dao.schemas.upstreams")
+      local default = upstreams.fields.healthchecks.default
+
+      for _, row in ipairs(rows) do
+        if not row.healthchecks then
+          local _, err = dao.upstreams:update({
+            healthchecks = default,
+          }, { id = row.id })
+          if err then
+            return err
+          end
+        end
+      end
+    end,
+    down = function(_, _, dao) end
+  },
+  {
+    name = "2017-10-27-134100_consistent_hashing_2",
+    up = function(_, _, dao)
+      local rows, err = dao.upstreams:find_all()
+      if err then
+        return err
+      end
+
+      for _, row in ipairs(rows) do
+        if not row.hash_on or not row.hash_fallback then
+          row.hash_on = "none"
+          row.hash_fallback = "none"
+          local _, err = dao.upstreams:update(row, { id = row.id })
+          if err then
+            return err
+          end
+        end
+      end
+    end,
+    down = function(_, _, dao) end  -- n.a. since the columns will be dropped
+  },
+  {
+    name = "2017-09-14-140200_routes_and_services",
+    up = [[
+      CREATE TABLE IF NOT EXISTS routes (
+          partition       text,
+          id              uuid,
+          created_at      timestamp,
+          updated_at      timestamp,
+          protocols       set<text>,
+          methods         set<text>,
+          hosts           list<text>,
+          paths           list<text>,
+          regex_priority  int,
+          strip_path      boolean,
+          preserve_host   boolean,
+
+          service_id      uuid,
+
+          PRIMARY KEY     (partition, id)
+      );
+
+      CREATE INDEX IF NOT EXISTS routes_service_id_idx ON routes(service_id);
+
+      CREATE TABLE IF NOT EXISTS services (
+          partition       text,
+          id              uuid,
+          created_at      timestamp,
+          updated_at      timestamp,
+          name            text,
+          protocol        text,
+          host            text,
+          port            int,
+          path            text,
+          retries         int,
+          connect_timeout int,
+          write_timeout   int,
+          read_timeout    int,
+
+          PRIMARY KEY (partition, id)
+      );
+
+      CREATE INDEX IF NOT EXISTS services_name_idx ON services(name);
+    ]],
+    down = nil
+  },
+  {
+    name = "2017-10-25-180700_plugins_routes_and_services",
+    up = [[
+      ALTER TABLE plugins ADD route_id uuid;
+      ALTER TABLE plugins ADD service_id uuid;
+
+      CREATE INDEX IF NOT EXISTS ON plugins(route_id);
+      CREATE INDEX IF NOT EXISTS ON plugins(service_id);
+    ]],
+    down = nil
+  },
+  {
+    name = "2018-02-23-142400_targets_add_index",
+    up = [[
+      CREATE INDEX IF NOT EXISTS ON targets(target);
+    ]],
+    down = nil
+  },
+  {
+    name = "2018-03-22-141700_create_new_ssl_tables",
+    up = [[
+      CREATE TABLE IF NOT EXISTS certificates(
+        partition text,
+        id uuid,
+        cert text,
+        key text,
+        created_at timestamp,
+        PRIMARY KEY (partition, id)
+      );
+
+      CREATE TABLE IF NOT EXISTS snis(
+        partition text,
+        id uuid,
+        name text,
+        certificate_id uuid,
+        created_at timestamp,
+        PRIMARY KEY (partition, id)
+      );
+
+      CREATE INDEX IF NOT EXISTS snis_name_idx ON snis(name);
+      CREATE INDEX IF NOT EXISTS snis_certificate_id_idx ON snis(certificate_id);
+    ]],
+    down = nil
+  },
+  {
+    name = "2018-03-26-234600_copy_records_to_new_ssl_tables",
+    up = function(_, _, dao)
+      local ssl_certificates_def = {
+        name    = "ssl_certificates",
+        columns = {
+          id         = "uuid",
+          cert       = "text",
+          key        = "text",
+          created_at = "timestamp",
+        },
+        partition_keys = { "id" },
+      }
+
+      local certificates_def = {
+        name    = "certificates",
+        columns = {
+          partition  = "text",
+          id         = "uuid",
+          cert       = "text",
+          key        = "text",
+          created_at = "timestamp",
+        },
+        partition_keys = { "partition", "id" },
+      }
+
+      local _, err = migration_helpers.cassandra.copy_records(dao,
+        ssl_certificates_def,
+        certificates_def, {
+          partition  = function() return cassandra.text("certificates") end,
+          id         = "id",
+          cert       = "cert",
+          key        = "key",
+          created_at = "created_at",
+        })
+      if err then
+        return err
+      end
+
+      local ssl_servers_names_def = {
+        name    = "ssl_servers_names",
+        columns = {
+          name       = "text",
+          ssl_certificate_id = "uuid",
+          created_at = "timestamp",
+        },
+        partition_keys = { "name", "ssl_certificate_id" },
+      }
+
+      local snis_def = {
+        name    = "snis",
+        columns = {
+          partition      = "text",
+          id             = "uuid",
+          name           = "text",
+          certificate_id = "uuid",
+          created_at     = "timestamp",
+        },
+        partition_keys = { "partition", "id" },
+      }
+
+      local _, err = migration_helpers.cassandra.copy_records(dao,
+        ssl_servers_names_def,
+        snis_def, {
+          partition      = function() return cassandra.text("snis") end,
+          id             = function() return cassandra.uuid(utils.uuid()) end,
+          name           = "name",
+          certificate_id = "ssl_certificate_id",
+          created_at     = "created_at",
+        })
+      if err then
+        return err
+      end
+    end,
+    down = nil
+  },
+  { name = "2018-03-27-002500_drop_old_ssl_tables",
+    up = [[
+      DROP INDEX ssl_servers_names_ssl_certificate_id_idx;
+      DROP TABLE ssl_certificates;
+      DROP TABLE ssl_servers_names;
+    ]],
+    down = nil,
+  },
+  {
+    name = "2018-03-16-160000_index_consumers",
+    up = [[
+      CREATE INDEX IF NOT EXISTS ON consumers(custom_id);
+      CREATE INDEX IF NOT EXISTS ON consumers(username);
+    ]]
+  },
+  {
+    name = "2018-05-17-173100_hash_on_cookie",
+    up = [[
+      ALTER TABLE upstreams ADD hash_on_cookie text;
+      ALTER TABLE upstreams ADD hash_on_cookie_path text;
+    ]],
+    down = [[
+      ALTER TABLE upstreams DROP hash_on_cookie;
+      ALTER TABLE upstreams DROP hash_on_cookie_path;
+    ]]
+  }
 }

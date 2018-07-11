@@ -1,3 +1,6 @@
+local utils = require "kong.tools.utils"
+
+
 return {
   {
     name = "2015-01-12-175310_skeleton",
@@ -199,14 +202,14 @@ return {
   {
     name = "2016-12-14-172100_move_ssl_certs_to_core",
     up = [[
-      CREATE TABLE ssl_certificates(
+      CREATE TABLE IF NOT EXISTS ssl_certificates(
         id uuid PRIMARY KEY,
         cert text ,
         key text ,
         created_at timestamp without time zone default (CURRENT_TIMESTAMP(0) at time zone 'utc')
       );
 
-      CREATE TABLE ssl_servers_names(
+      CREATE TABLE IF NOT EXISTS ssl_servers_names(
         name text PRIMARY KEY,
         ssl_certificate_id uuid REFERENCES ssl_certificates(id) ON DELETE CASCADE,
         created_at timestamp without time zone default (CURRENT_TIMESTAMP(0) at time zone 'utc')
@@ -273,12 +276,12 @@ return {
         set[#set + 1] = fmt("upstream_url = '%s'", upstream_url)
 
         if row.request_host and row.request_host ~= "" then
-          set[#set + 1] = fmt("hosts = '%s'", 
+          set[#set + 1] = fmt("hosts = '%s'",
                               cjson.encode({ row.request_host }))
         end
 
         if row.request_path and row.request_path ~= "" then
-          set[#set + 1] = fmt("uris = '%s'", 
+          set[#set + 1] = fmt("uris = '%s'",
                               cjson.encode({ row.request_path }))
         end
 
@@ -324,7 +327,12 @@ return {
   {
     name = "2016-01-25-103600_unique_custom_id",
     up = [[
-      ALTER TABLE consumers ADD CONSTRAINT consumers_custom_id_key UNIQUE(custom_id);
+      DO $$
+      BEGIN
+        ALTER TABLE consumers ADD CONSTRAINT consumers_custom_id_key UNIQUE(custom_id);
+      EXCEPTION WHEN duplicate_table THEN
+        -- Do nothing, accept existing state
+      END$$;
     ]],
     down = [[
       ALTER TABLE consumers DROP CONSTRAINT consumers_custom_id_key;
@@ -375,6 +383,8 @@ return {
     name = "2017-03-27-132300_anonymous",
     -- this should have been in 0.10, but instead goes into 0.10.1 as a bugfix
     up = function(_, _, dao)
+      local cjson = require "cjson"
+
       for _, name in ipairs({
         "basic-auth",
         "hmac-auth",
@@ -383,15 +393,24 @@ return {
         "ldap-auth",
         "oauth2",
       }) do
-        local rows, err = dao.plugins:find_all( { name = name } )
+        local q = string.format("SELECT id, config FROM plugins WHERE name = '%s'",
+                                name)
+
+        local rows, err = dao.db:query(q)
         if err then
           return err
         end
 
         for _, row in ipairs(rows) do
-          if not row.config.anonymous then
-            row.config.anonymous = ""
-            local _, err = dao.plugins:update(row, { id = row.id })
+          local config = cjson.decode(row.config)
+
+          if not config.anonymous then
+            config.anonymous = ""
+
+            local q = string.format("UPDATE plugins SET config = '%s' WHERE id = '%s'",
+                                    cjson.encode(config), row.id)
+
+            local _, err = dao.db:query(q)
             if err then
               return err
             end
@@ -526,4 +545,255 @@ return {
       DROP INDEX ttls_primary_uuid_value_idx;
     ]]
   },
+  {
+    name = "2017-07-28-225000_balancer_orderlist_remove",
+    up = [[
+      ALTER TABLE upstreams DROP COLUMN IF EXISTS orderlist;
+    ]],
+    down = function(_, _, dao) end  -- not implemented
+  },
+  {
+    name = "2017-10-02-173400_apis_created_at_ms_precision",
+    up = [[
+      ALTER TABLE apis ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP(3);
+    ]],
+    down = [[
+      ALTER TABLE apis ALTER COLUMN created_at SET DEFAULT CURRENT_TIMESTAMP(0);
+    ]]
+  },
+  {
+    name = "2017-11-07-192000_upstream_healthchecks",
+    up = [[
+      DO $$
+      BEGIN
+          ALTER TABLE upstreams ADD COLUMN healthchecks json;
+      EXCEPTION WHEN duplicate_column THEN
+          -- Do nothing, accept existing state
+      END$$;
+
+    ]],
+    down = [[
+      ALTER TABLE upstreams DROP COLUMN IF EXISTS healthchecks;
+    ]]
+  },
+  {
+    name = "2017-10-27-134100_consistent_hashing_1",
+    up = [[
+      ALTER TABLE upstreams ADD hash_on text;
+      ALTER TABLE upstreams ADD hash_fallback text;
+      ALTER TABLE upstreams ADD hash_on_header text;
+      ALTER TABLE upstreams ADD hash_fallback_header text;
+    ]],
+    down = [[
+      ALTER TABLE upstreams DROP COLUMN IF EXISTS hash_on;
+      ALTER TABLE upstreams DROP COLUMN IF EXISTS hash_fallback;
+      ALTER TABLE upstreams DROP COLUMN IF EXISTS hash_on_header;
+      ALTER TABLE upstreams DROP COLUMN IF EXISTS hash_fallback_header;
+    ]]
+  },
+  {
+    name = "2017-11-07-192100_upstream_healthchecks_2",
+    up = function(_, _, dao)
+      local rows, err = dao.db:query([[
+        SELECT * FROM upstreams;
+      ]])
+      if err then
+        return err
+      end
+
+      local upstreams = require("kong.dao.schemas.upstreams")
+      local default = upstreams.fields.healthchecks.default
+
+      for _, row in ipairs(rows) do
+        if not row.healthchecks then
+          local _, err = dao.upstreams:update({
+            healthchecks = default,
+          }, { id = row.id })
+          if err then
+            return err
+          end
+        end
+      end
+    end,
+    down = function(_, _, dao) end
+  },
+  {
+    name = "2017-10-27-134100_consistent_hashing_2",
+    up = function(_, _, dao)
+      local rows, err = dao.db:query([[
+        SELECT * FROM upstreams;
+      ]])
+      if err then
+        return err
+      end
+
+      for _, row in ipairs(rows) do
+        if not row.hash_on or not row.hash_fallback then
+          row.hash_on = "none"
+          row.hash_fallback = "none"
+          row.created_at = nil
+          local _, err = dao.upstreams:update(row, { id = row.id })
+          if err then
+            return err
+          end
+        end
+      end
+    end,
+    down = function(_, _, dao) end  -- n.a. since the columns will be dropped
+  },
+  {
+    name = "2017-09-14-121200_routes_and_services",
+    up = [[
+      CREATE TABLE IF NOT EXISTS "services" (
+        "id"               UUID                       PRIMARY KEY,
+        "created_at"       TIMESTAMP WITH TIME ZONE,
+        "updated_at"       TIMESTAMP WITH TIME ZONE,
+        "name"             TEXT                       UNIQUE,
+        "retries"          BIGINT,
+        "protocol"         TEXT,
+        "host"             TEXT,
+        "port"             BIGINT,
+        "path"             TEXT,
+        "connect_timeout"  BIGINT,
+        "write_timeout"    BIGINT,
+        "read_timeout"     BIGINT
+      );
+
+      CREATE TABLE IF NOT EXISTS "routes" (
+        "id"             UUID                       PRIMARY KEY,
+        "created_at"     TIMESTAMP WITH TIME ZONE,
+        "updated_at"     TIMESTAMP WITH TIME ZONE,
+        "protocols"      TEXT[],
+        "methods"        TEXT[],
+        "hosts"          TEXT[],
+        "paths"          TEXT[],
+        "regex_priority" BIGINT,
+        "strip_path"     BOOLEAN,
+        "preserve_host"  BOOLEAN,
+        "service_id"     UUID                       REFERENCES "services" ("id")
+      );
+      DO $$
+      BEGIN
+        IF (SELECT to_regclass('routes_fkey_service') IS NULL) THEN
+          CREATE INDEX "routes_fkey_service"
+                    ON "routes" ("service_id");
+        END IF;
+      END$$;
+    ]],
+    down = nil
+  },
+  {
+    name = "2017-10-25-180700_plugins_routes_and_services",
+    up = [[
+      ALTER TABLE plugins ADD route_id uuid REFERENCES routes(id) ON DELETE CASCADE;
+      ALTER TABLE plugins ADD service_id uuid REFERENCES services(id) ON DELETE CASCADE;
+
+      DO $$
+      BEGIN
+        IF (SELECT to_regclass('plugins_route_id_idx')) IS NULL THEN
+          CREATE INDEX plugins_route_id_idx ON plugins(route_id);
+        END IF;
+        IF (SELECT to_regclass('plugins_service_id_idx')) IS NULL THEN
+          CREATE INDEX plugins_service_id_idx ON plugins(service_id);
+        END IF;
+      END$$;
+    ]],
+    down = nil
+  },
+  {
+    name = "2018-03-27-123400_prepare_certs_and_snis",
+    up = [[
+      DO $$
+      BEGIN
+        ALTER TABLE ssl_certificates    RENAME TO certificates;
+        ALTER TABLE ssl_servers_names   RENAME TO snis;
+      EXCEPTION WHEN duplicate_table THEN
+        -- Do nothing, accept existing state
+      END$$;
+
+      DO $$
+      BEGIN
+        ALTER TABLE snis RENAME COLUMN ssl_certificate_id TO certificate_id;
+        ALTER TABLE snis ADD    COLUMN id uuid;
+      EXCEPTION WHEN undefined_column THEN
+        -- Do nothing, accept existing state
+      END$$;
+
+      DO $$
+      BEGIN
+        ALTER TABLE snis ALTER COLUMN created_at TYPE timestamp with time zone
+          USING created_at AT time zone 'UTC';
+        ALTER TABLE certificates ALTER COLUMN created_at TYPE timestamp with time zone
+          USING created_at AT time zone 'UTC';
+      EXCEPTION WHEN undefined_column THEN
+        -- Do nothing, accept existing state
+      END$$;
+    ]],
+    down = nil
+  },
+  {
+    name = "2018-03-27-125400_fill_in_snis_ids",
+    up = function(_, _, dao)
+      local fmt = string.format
+
+      local rows, err = dao.db:query([[
+        SELECT * FROM snis;
+      ]])
+      if err then
+        return err
+      end
+      local sql_buffer = { "BEGIN;" }
+      local len = #rows
+      for i = 1, len do
+        sql_buffer[i + 1] = fmt("UPDATE snis SET id = '%s' WHERE name = '%s';",
+                                utils.uuid(),
+                                rows[i].name)
+      end
+      sql_buffer[len + 2] = "COMMIT;"
+
+      local _, err = dao.db:query(table.concat(sql_buffer))
+      if err then
+        return err
+      end
+    end,
+    down = nil
+  },
+  {
+    name = "2018-03-27-130400_make_ids_primary_keys_in_snis",
+    up = [[
+      ALTER TABLE snis
+        DROP CONSTRAINT IF EXISTS ssl_servers_names_pkey;
+
+      ALTER TABLE snis
+        DROP CONSTRAINT IF EXISTS ssl_servers_names_ssl_certificate_id_fkey;
+
+      DO $$
+      BEGIN
+        ALTER TABLE snis
+          ADD CONSTRAINT snis_name_unique UNIQUE(name);
+
+        ALTER TABLE snis
+          ADD PRIMARY KEY (id);
+
+        ALTER TABLE snis
+          ADD CONSTRAINT snis_certificate_id_fkey
+          FOREIGN KEY (certificate_id)
+          REFERENCES certificates;
+      EXCEPTION WHEN duplicate_table THEN
+        -- Do nothing, accept existing state
+      END$$;
+    ]],
+    down = nil
+  },
+  {
+    name = "2018-05-17-173100_hash_on_cookie",
+    up = [[
+      ALTER TABLE upstreams ADD hash_on_cookie text;
+      ALTER TABLE upstreams ADD hash_on_cookie_path text;
+    ]],
+    down = [[
+      ALTER TABLE upstreams DROP hash_on_cookie;
+      ALTER TABLE upstreams DROP hash_on_cookie_path;
+    ]]
+  }
 }

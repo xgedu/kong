@@ -4,7 +4,7 @@
 -- NOTE: Before implementing a function here, consider if it will be used in many places
 -- across Kong. If not, a local function in the appropriate module is prefered.
 --
--- @copyright Copyright 2016-2017 Kong Inc. All rights reserved.
+-- @copyright Copyright 2016-2018 Kong Inc. All rights reserved.
 -- @license [Apache 2.0](https://opensource.org/licenses/Apache-2.0)
 -- @module kong.tools.utils
 
@@ -48,6 +48,7 @@ const char *ERR_reason_error_string(unsigned long e);
 
 int open(const char * filename, int flags, int mode);
 size_t read(int fd, void *buf, size_t count);
+int write(int fd, const void *ptr, int numbytes);
 int close(int fd);
 char *strerror(int errnum);
 ]]
@@ -262,15 +263,20 @@ do
   end
 
   --- Encode a Lua table to a querystring
-  -- Tries to mimic ngx_lua's `ngx.encode_args`, but also percent-encode querystring values.
-  -- Supports multi-value query args, boolean values.
-  -- It also supports encoding for bodies (only because it is used in http_client for specs.
-  -- @TODO drop and use `ngx.encode_args` once it implements percent-encoding.
+  -- Tries to mimic ngx_lua's `ngx.encode_args`, but has differences:
+  -- * It percent-encodes querystring values.
+  -- * It also supports encoding for bodies (only because it is used in http_client for specs.
+  -- * It encodes arrays like Lapis instead of like ngx.encode_args to allow interacting with Lapis
+  -- * It encodes ngx.null as empty strings
+  -- * It encodes true and false as "true" and "false"
   -- @see https://github.com/Mashape/kong/issues/749
   -- @param[type=table] args A key/value table containing the query args to encode.
   -- @param[type=boolean] raw If true, will not percent-encode any key/value and will ignore special boolean rules.
+  -- @param[type=boolean] no_array_indexes If true, arrays/map elements will be
+  --                      encoded without an index: 'my_array[]='. By default,
+  --                      array elements will have an index: 'my_array[0]='.
   -- @treturn string A valid querystring (without the prefixing '?')
-  function _M.encode_args(args, raw)
+  function _M.encode_args(args, raw, no_array_indexes)
     local query = {}
     local keys = {}
 
@@ -283,12 +289,27 @@ do
     for _, key in ipairs(keys) do
       local value = args[key]
       if type(value) == "table" then
-        for _, sub_value in ipairs(value) do
-          query[#query+1] = encode_args_value(key, sub_value, raw)
+        for sub_key, sub_value in pairs(value) do
+          if no_array_indexes then
+            query[#query+1] = encode_args_value(key, sub_value, raw)
+
+          else
+            if type(sub_key) == "number" then
+              query[#query+1] = encode_args_value(("%s[%s]")
+                                  :format(key, tostring(sub_key)), sub_value,
+                                          raw)
+
+            else
+              query[#query+1] = encode_args_value(("%s.%s")
+                                  :format(key, tostring(sub_key)), sub_value,
+                                          raw)
+
+            end
+          end
         end
-      elseif value == true then
-        query[#query+1] = encode_args_value(key, raw and true or nil, raw)
-      elseif value ~= false and value ~= nil or raw then
+      elseif value == ngx.null then
+        query[#query+1] = encode_args_value(key, "")
+      elseif  value ~= nil or raw then
         value = tostring(value)
         if value ~= "" then
           query[#query+1] = encode_args_value(key, value, raw)
@@ -300,7 +321,61 @@ do
 
     return concat(query, "&")
   end
+
+  local function decode_array(t)
+    local keys = {}
+    local len  = 0
+    for k in pairs(t) do
+      len = len + 1
+      local number = tonumber(k)
+      if not number then
+        return nil
+      end
+      keys[len] = number
+    end
+
+    table.sort(keys)
+    local new_t = {}
+
+    for i=1,len do
+      if keys[i] ~= i then
+        return nil
+      end
+      new_t[i] = t[tostring(i)]
+    end
+
+    return new_t
+  end
+
+  -- Parses params in post requests
+  -- Transforms "string-like numbers" inside "array-like" tables into numbers
+  -- (needs a complete array with no holes starting on "1")
+  --   { x = {["1"] = "a", ["2"] = "b" } } becomes { x = {"a", "b"} }
+  -- Transforms empty strings into ngx.null:
+  --   { x = "" } becomes { x = ngx.null }
+  -- Transforms the strings "true" and "false" into booleans
+  --   { x = "true" } becomes { x = true }
+  function _M.decode_args(args)
+    local new_args = {}
+
+    for k, v in pairs(args) do
+      if type(v) == "table" then
+        v = decode_array(v) or v
+      elseif v == "" then
+        v = ngx.null
+      elseif v == "true" then
+        v = true
+      elseif v == "false" then
+        v = false
+      end
+      new_args[k] = v
+    end
+
+    return new_args
+  end
+
 end
+
 
 --- Checks whether a request is https or was originally https (but already
 -- terminated). It will check in the current request (global `ngx` table). If
@@ -424,6 +499,30 @@ function _M.shallow_copy(orig)
   return copy
 end
 
+--- Merges two tables recursively
+-- For each subtable in t1 and t2, an equivalent (but different) table will
+-- be created in the resulting merge. If t1 and t2 have a subtable with in the
+-- same key k, res[k] will be a deep merge of both subtables.
+-- Metatables are not taken into account.
+-- Keys are copied by reference (if tables are used as keys they will not be
+-- duplicated)
+-- @param t1 one of the tables to merge
+-- @param t2 one of the tables to merge
+-- @return Returns a table representing a deep merge of the new table
+function _M.deep_merge(t1, t2)
+  local res = _M.deep_copy(t1)
+
+  for k, v in pairs(t2) do
+    if type(v) == "table" and type(res[k]) == "table" then
+      res[k] = _M.deep_merge(res[k], v)
+    else
+      res[k] = _M.deep_copy(v) -- returns v when it is not a table
+    end
+  end
+
+  return res
+end
+
 local err_list_mt = {}
 
 --- Concatenates lists into a new table.
@@ -540,13 +639,13 @@ _M.normalize_ipv4 = function(address)
      c > 255 or d < 0 or d > 255 then
     return nil, "invalid ipv4 address: " .. address
   end
-  if port then 
-    port = tonumber(port) 
+  if port then
+    port = tonumber(port)
     if port > 65535 then
       return nil, "invalid port number"
     end
   end
-  
+
   return fmt("%d.%d.%d.%d",a,b,c,d), port
 end
 
@@ -561,7 +660,7 @@ _M.normalize_ipv6 = function(address)
   if check then
     check = check:sub(2, -2)  -- drop the brackets
     -- we have ipv6 in brackets, now get port if we got something left
-    if port then 
+    if port then
       port = port:match("^:(%d-)$")
       if not port then
         return nil, "invalid ipv6 address"
@@ -671,7 +770,7 @@ end
 -- local addr, err = format_ip(check_hostname("//bad .. name\\"))    --> nil, "invalid hostname: ... "
 _M.format_host = function(p1, p2)
   local t = type(p1)
-  if t == "nil" then 
+  if t == "nil" then
     return p1, p2   -- just pass through any errors passed in
   end
   local host, port, typ
@@ -708,6 +807,24 @@ _M.validate_header_name = function(name)
   end
 
   return nil, "bad header name '" .. name ..
+              "', allowed characters are A-Z, a-z, 0-9, '_', and '-'"
+end
+
+--- Validates a cookie name.
+-- Checks characters used in a cookie name to be valid
+-- a-z, A-Z, 0-9, '_' and '-' are allowed.
+-- @param name (string) the cookie name to verify
+-- @return the valid cookie name, or `nil+error`
+_M.validate_cookie_name = function(name)
+  if name == nil or name == "" then
+    return nil, "no cookie name provided"
+  end
+
+  if re_match(name, "^[a-zA-Z0-9-_]+$", "jo") then
+    return name
+  end
+
+  return nil, "bad cookie name '" .. name ..
               "', allowed characters are A-Z, a-z, 0-9, '_', and '-'"
 end
 

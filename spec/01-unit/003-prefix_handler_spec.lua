@@ -9,10 +9,8 @@ describe("NGINX conf compiler", function()
   describe("gen_default_ssl_cert()", function()
     local conf = assert(conf_loader(helpers.test_conf_path, {
       prefix = "ssl_tmp",
-      ssl = true,
       ssl_cert = "spec/fixtures/kong_spec.crt",
       ssl_cert_key = "spec/fixtures/kong_spec.key",
-      admin_ssl = true,
       admin_ssl_cert = "spec/fixtures/kong_spec.crt",
       admin_ssl_cert_key = "spec/fixtures/kong_spec.key",
     }))
@@ -57,9 +55,9 @@ describe("NGINX conf compiler", function()
   describe("compile_kong_conf()", function()
     it("compiles the Kong NGINX conf chunk", function()
       local kong_nginx_conf = prefix_handler.compile_kong_conf(helpers.test_conf)
-      assert.matches("lua_package_path './?.lua;./?/init.lua;;;'", kong_nginx_conf, nil, true)
+      assert.matches("lua_package_path './spec/fixtures/custom_plugins/?.lua;;'", kong_nginx_conf, nil, true)
       assert.matches("listen 0.0.0.0:9000;", kong_nginx_conf, nil, true)
-      assert.matches("listen 0.0.0.0:9001;", kong_nginx_conf, nil, true)
+      assert.matches("listen 127.0.0.1:9001;", kong_nginx_conf, nil, true)
       assert.matches("server_name kong;", kong_nginx_conf, nil, true)
       assert.matches("server_name kong_admin;", kong_nginx_conf, nil, true)
       assert.not_matches("lua_ssl_trusted_certificate", kong_nginx_conf, nil, true)
@@ -71,51 +69,54 @@ describe("NGINX conf compiler", function()
         admin_listen = "127.0.0.1:8001"
       }))
       local kong_nginx_conf = prefix_handler.compile_kong_conf(conf)
-      assert.matches("lua_shared_dict kong_cache%s+128k;", kong_nginx_conf)
+      assert.matches("lua_shared_dict kong_db_cache%s+128k;", kong_nginx_conf)
       assert.matches("listen 0.0.0.0:80;", kong_nginx_conf, nil, true)
       assert.matches("listen 127.0.0.1:8001;", kong_nginx_conf, nil, true)
     end)
     it("enables HTTP/2", function()
       local conf = assert(conf_loader(helpers.test_conf_path, {
-        http2 = true,
-        admin_http2 = true
+        proxy_listen = "0.0.0.0:9000, 0.0.0.0:9443 http2 ssl",
+        admin_listen = "127.0.0.1:9001, 127.0.0.1:9444 http2 ssl",
       }))
       local kong_nginx_conf = prefix_handler.compile_kong_conf(conf)
       assert.matches("listen 0.0.0.0:9000;", kong_nginx_conf, nil, true)
       assert.matches("listen 0.0.0.0:9443 ssl http2;", kong_nginx_conf, nil, true)
-      assert.matches("listen 0.0.0.0:9001;", kong_nginx_conf, nil, true)
-      assert.matches("listen 0.0.0.0:8444 ssl http2;", kong_nginx_conf, nil, true)
+      assert.matches("listen 127.0.0.1:9001;", kong_nginx_conf, nil, true)
+      assert.matches("listen 127.0.0.1:9444 ssl http2;", kong_nginx_conf, nil, true)
 
       conf = assert(conf_loader(helpers.test_conf_path, {
-        http2 = true,
+        proxy_listen = "0.0.0.0:9000, 0.0.0.0:9443 http2 ssl",
+        admin_listen = "127.0.0.1:9001, 127.0.0.1:8444 ssl",
       }))
       kong_nginx_conf = prefix_handler.compile_kong_conf(conf)
       assert.matches("listen 0.0.0.0:9000;", kong_nginx_conf, nil, true)
       assert.matches("listen 0.0.0.0:9443 ssl http2;", kong_nginx_conf, nil, true)
-      assert.matches("listen 0.0.0.0:9001;", kong_nginx_conf, nil, true)
-      assert.matches("listen 0.0.0.0:8444 ssl;", kong_nginx_conf, nil, true)
+      assert.matches("listen 127.0.0.1:9001;", kong_nginx_conf, nil, true)
+      assert.matches("listen 127.0.0.1:8444 ssl;", kong_nginx_conf, nil, true)
 
       conf = assert(conf_loader(helpers.test_conf_path, {
-        admin_http2 = true
+        proxy_listen = "0.0.0.0:9000, 0.0.0.0:9443 ssl",
+        admin_listen = "127.0.0.1:9001, 127.0.0.1:8444 http2 ssl",
       }))
       kong_nginx_conf = prefix_handler.compile_kong_conf(conf)
       assert.matches("listen 0.0.0.0:9000;", kong_nginx_conf, nil, true)
       assert.matches("listen 0.0.0.0:9443 ssl;", kong_nginx_conf, nil, true)
-      assert.matches("listen 0.0.0.0:9001;", kong_nginx_conf, nil, true)
-      assert.matches("listen 0.0.0.0:8444 ssl http2;", kong_nginx_conf, nil, true)
+      assert.matches("listen 127.0.0.1:9001;", kong_nginx_conf, nil, true)
+      assert.matches("listen 127.0.0.1:8444 ssl http2;", kong_nginx_conf, nil, true)
     end)
     it("enables proxy_protocol", function()
       local conf = assert(conf_loader(helpers.test_conf_path, {
+        proxy_listen = "0.0.0.0:9000 proxy_protocol",
         real_ip_header = "proxy_protocol",
       }))
       local kong_nginx_conf = prefix_handler.compile_kong_conf(conf)
       assert.matches("listen 0.0.0.0:9000 proxy_protocol;", kong_nginx_conf, nil, true)
-      assert.matches("listen 0.0.0.0:9443 ssl proxy_protocol;", kong_nginx_conf, nil, true)
+      assert.matches("real_ip_header%s+proxy_protocol;", kong_nginx_conf)
     end)
     it("disables SSL", function()
       local conf = assert(conf_loader(helpers.test_conf_path, {
-        ssl = false,
-        admin_ssl = false
+        proxy_listen = "127.0.0.1:8000",
+        admin_listen = "127.0.0.1:8001",
       }))
       local kong_nginx_conf = prefix_handler.compile_kong_conf(conf)
       assert.not_matches("listen %d+%.%d+%.%d+%.%d+:%d+ ssl;", kong_nginx_conf)
@@ -279,12 +280,42 @@ describe("NGINX conf compiler", function()
       end)
       it("proxy_protocol", function()
         local conf = assert(conf_loader(nil, {
-          real_ip_header = "proxy_protocol"
+          proxy_listen = "0.0.0.0:8000 proxy_protocol, 0.0.0.0:8443 ssl",
+          real_ip_header = "proxy_protocol",
         }))
         local nginx_conf = prefix_handler.compile_kong_conf(conf)
         assert.matches("real_ip_header%s+proxy_protocol", nginx_conf)
         assert.matches("listen 0.0.0.0:8000 proxy_protocol;", nginx_conf)
-        assert.matches("listen 0.0.0.0:8443 ssl proxy_protocol;", nginx_conf)
+        assert.matches("listen 0.0.0.0:8443 ssl;", nginx_conf)
+      end)
+    end)
+
+    describe("injected NGINX directives", function()
+      it("injects ngx_http_* directives", function()
+        local conf = assert(conf_loader(nil, {
+          nginx_http_large_client_header_buffers = "8 24k",
+          nginx_http_log_format = "custom_fmt '$connection $request_time'"
+        }))
+        local nginx_conf = prefix_handler.compile_kong_conf(conf)
+        assert.matches("large_client_header_buffers%s+8 24k;", nginx_conf)
+        assert.matches("log_format custom_fmt '$connection $request_time';",
+                       nginx_conf, nil, true)
+      end)
+
+      it("injects ngx_proxy_* directives", function()
+        local conf = assert(conf_loader(nil, {
+          nginx_http_large_client_header_buffers = "16 24k",
+        }))
+        local nginx_conf = prefix_handler.compile_kong_conf(conf)
+        assert.matches("large_client_header_buffers%s+16 24k;", nginx_conf)
+      end)
+
+      it("injects ngx_admin_* directives", function()
+        local conf = assert(conf_loader(nil, {
+          nginx_http_large_client_header_buffers = "4 24k",
+        }))
+        local nginx_conf = prefix_handler.compile_kong_conf(conf)
+        assert.matches("large_client_header_buffers%s+4 24k;", nginx_conf)
       end)
     end)
   end)
@@ -377,7 +408,7 @@ describe("NGINX conf compiler", function()
       assert.truthy(exists(tmp_config.nginx_kong_conf))
       assert.truthy(exists(tmp_config.nginx_err_logs))
       assert.truthy(exists(tmp_config.nginx_acc_logs))
-      assert.truthy(exists(tmp_config.nginx_admin_acc_logs))
+      assert.truthy(exists(tmp_config.admin_acc_logs))
     end)
     it("dumps Kong conf", function()
       assert(prefix_handler.prepare_prefix(tmp_config))
@@ -403,16 +434,16 @@ describe("NGINX conf compiler", function()
       assert(prefix_handler.prepare_prefix(conf))
 
       local in_prefix_kong_conf = assert(conf_loader(tmp_config.kong_env))
-      assert.True(in_prefix_kong_conf.plugins.foo)
-      assert.True(in_prefix_kong_conf.plugins.bar)
+      assert.True(in_prefix_kong_conf.loaded_plugins.foo)
+      assert.True(in_prefix_kong_conf.loaded_plugins.bar)
     end)
 
     describe("ssl", function()
       it("does not create SSL dir if disabled", function()
         local conf = conf_loader(nil, {
           prefix = tmp_config.prefix,
-          ssl = false,
-          admin_ssl = false
+          proxy_listen = "127.0.0.1:8000",
+          admin_listen = "127.0.0.1:8001",
         })
 
         assert(prefix_handler.prepare_prefix(conf))
@@ -421,10 +452,10 @@ describe("NGINX conf compiler", function()
       it("does not create SSL dir if using custom cert", function()
         local conf = conf_loader(nil, {
           prefix = tmp_config.prefix,
-          ssl = true,
+          proxy_listen = "127.0.0.1:8000 ssl",
+          admin_listen = "127.0.0.1:8001 ssl",
           ssl_cert = "spec/fixtures/kong_spec.crt",
           ssl_cert_key = "spec/fixtures/kong_spec.key",
-          admin_ssl = true,
           admin_ssl_cert = "spec/fixtures/kong_spec.crt",
           admin_ssl_cert_key = "spec/fixtures/kong_spec.key",
         })
@@ -435,8 +466,8 @@ describe("NGINX conf compiler", function()
       it("generates default SSL cert", function()
         local conf = conf_loader(nil, {
           prefix = tmp_config.prefix,
-          ssl = true,
-          admin_ssl = true
+          proxy_listen = "127.0.0.1:8000 ssl",
+          admin_listen = "127.0.0.1:8001 ssl",
         })
 
         assert(prefix_handler.prepare_prefix(conf))
@@ -464,6 +495,25 @@ describe("NGINX conf compiler", function()
         local ok, err = prefix_handler.prepare_prefix(tmp_config, "spec/fixtures/inexistent.template")
         assert.is_nil(ok)
         assert.equal("no such file: spec/fixtures/inexistent.template", err)
+      end)
+      it("reports Penlight templating errors", function()
+        local u = helpers.unindent
+        local tmp = os.tmpname()
+
+        helpers.file.write(tmp, u[[
+          > if t.hello then
+
+          > end
+        ]])
+
+        finally(function()
+          helpers.file.delete(tmp)
+        end)
+
+        local ok, err = prefix_handler.prepare_prefix(helpers.test_conf, tmp)
+        assert.is_nil(ok)
+        assert.matches("failed to compile nginx config template: .* " ..
+                       "attempt to index global 't' %(a nil value%)", err)
       end)
     end)
   end)

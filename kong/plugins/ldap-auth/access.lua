@@ -4,10 +4,15 @@ local singletons = require "kong.singletons"
 local ldap = require "kong.plugins.ldap-auth.ldap"
 
 local match = string.match
+local lower = string.lower
+local find = string.find
+local sub = string.sub
+local fmt = string.format
 local ngx_log = ngx.log
 local request = ngx.req
 local ngx_error = ngx.ERR
 local ngx_debug = ngx.DEBUG
+local md5 = ngx.md5
 local decode_base64 = ngx.decode_base64
 local ngx_socket_tcp = ngx.socket.tcp
 local ngx_set_header = ngx.req.set_header
@@ -16,14 +21,18 @@ local tostring =  tostring
 local AUTHORIZATION = "authorization"
 local PROXY_AUTHORIZATION = "proxy-authorization"
 
+
+local ldap_config_cache = setmetatable({}, { __mode = "k" })
+
+
 local _M = {}
 
-local function retrieve_credentials(authorization_header_value)
+local function retrieve_credentials(authorization_header_value, conf)
   local username, password
   if authorization_header_value then
-    local cred = match(authorization_header_value, "%s*[ldap|LDAP]%s+(.*)")
-
-    if cred ~= nil then
+    local s, e = find(lower(authorization_header_value), "^%s*" .. lower(conf.header_type) .. "%s+")
+    if s == 1 then
+      local cred = sub(authorization_header_value, e + 1)
       local decoded_cred = decode_base64(cred)
       username, password = match(decoded_cred, "(.+):(.+)")
     end
@@ -34,7 +43,6 @@ end
 local function ldap_authenticate(given_username, given_password, conf)
   local is_authenticated
   local err, suppressed_err, ok
-  local who = conf.attribute .. "=" .. given_username .. "," .. conf.base_dn
 
   local sock = ngx_socket_tcp()
   sock:settimeout(conf.timeout)
@@ -55,6 +63,7 @@ local function ldap_authenticate(given_username, given_password, conf)
     end
   end
 
+  local who = conf.attribute .. "=" .. given_username .. "," .. conf.base_dn
   is_authenticated, err = ldap.bind_request(sock, who, given_password)
 
   ok, suppressed_err = sock:setkeepalive(conf.keepalive)
@@ -81,14 +90,29 @@ local function load_credential(given_username, given_password, conf)
   return {username = given_username, password = given_password}
 end
 
+
+local function cache_key(conf, username)
+  if not ldap_config_cache[conf] then
+    ldap_config_cache[conf] = md5(fmt("%s:%u:%s:%s:%u",
+      lower(conf.ldap_host),
+      conf.ldap_port,
+      conf.base_dn,
+      conf.attribute,
+      conf.cache_ttl
+    ))
+  end
+
+  return fmt("ldap_auth_cache:%s:%s", ldap_config_cache[conf], username)
+end
+
+
 local function authenticate(conf, given_credentials)
-  local given_username, given_password = retrieve_credentials(given_credentials)
+  local given_username, given_password = retrieve_credentials(given_credentials, conf)
   if given_username == nil then
     return false
   end
 
-  local cache_key = "ldap_auth_cache:" .. ngx.ctx.api.id .. ":" .. given_username
-  local credential, err = singletons.cache:get(cache_key, {
+  local credential, err = singletons.cache:get(cache_key(conf, given_username), {
     ttl = conf.cache_ttl,
     neg_ttl = conf.cache_ttl,
   }, load_credential, given_username, given_password, conf)
@@ -100,7 +124,7 @@ local function authenticate(conf, given_credentials)
 end
 
 local function load_consumer(consumer_id, anonymous)
-  local result, err = singletons.dao.consumers:find { id = consumer_id }
+  local result, err = singletons.db.consumers:select { id = consumer_id }
   if not result then
     if anonymous and not err then
       err = 'anonymous consumer "' .. consumer_id .. '" not found'
@@ -111,7 +135,7 @@ local function load_consumer(consumer_id, anonymous)
 end
 
 local function set_consumer(consumer, credential)
-  
+
   if consumer then
     -- this can only be the Anonymous user in this case
     ngx_set_header(constants.HEADERS.CONSUMER_ID, consumer.id)
@@ -121,11 +145,11 @@ local function set_consumer(consumer, credential)
     ngx.ctx.authenticated_consumer = consumer
     return
   end
-  
+
   -- here we have been authenticated by ldap
   ngx_set_header(constants.HEADERS.CREDENTIAL_USERNAME, credential.username)
   ngx.ctx.authenticated_credential = credential
-  
+
   -- in case of auth plugins concatenation, remove remnants of anonymous
   ngx.ctx.authenticated_consumer = nil
   ngx_set_header(constants.HEADERS.ANONYMOUS, nil)
@@ -169,7 +193,7 @@ end
 function _M.execute(conf)
 
   if ngx.ctx.authenticated_credential and conf.anonymous ~= "" then
-    -- we're already authenticated, and we're configured for using anonymous, 
+    -- we're already authenticated, and we're configured for using anonymous,
     -- hence we're in a logical OR between auth methods and we're already done.
     return
   end
@@ -178,7 +202,7 @@ function _M.execute(conf)
   if not ok then
     if conf.anonymous ~= "" then
       -- get anonymous user
-      local consumer_cache_key = singletons.dao.consumers:cache_key(conf.anonymous)
+      local consumer_cache_key = singletons.db.consumers:cache_key(conf.anonymous)
       local consumer, err      = singletons.cache:get(consumer_cache_key, nil,
                                                       load_consumer,
                                                       conf.anonymous, true)

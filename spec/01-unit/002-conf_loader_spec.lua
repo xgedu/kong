@@ -1,5 +1,19 @@
 local conf_loader = require "kong.conf_loader"
 local helpers = require "spec.helpers"
+local tablex = require "pl.tablex"
+
+
+local function search_directive(tbl, directive_name, directive_value)
+  for _, directive in pairs(tbl) do
+    if directive.name == directive_name
+       and directive.value == directive_value then
+      return true
+    end
+  end
+
+  return false
+end
+
 
 describe("Configuration loader", function()
   it("loads the defaults", function()
@@ -7,10 +21,8 @@ describe("Configuration loader", function()
     assert.is_string(conf.lua_package_path)
     assert.is_nil(conf.nginx_user)
     assert.equal("auto", conf.nginx_worker_processes)
-    assert.equal("0.0.0.0:8001", conf.admin_listen)
-    assert.equal("0.0.0.0:8000", conf.proxy_listen)
-    assert.equal("0.0.0.0:8443", conf.proxy_listen_ssl)
-    assert.equal("0.0.0.0:8444", conf.admin_listen_ssl)
+    assert.same({"127.0.0.1:8001", "127.0.0.1:8444 ssl"}, conf.admin_listen)
+    assert.same({"0.0.0.0:8000", "0.0.0.0:8443 ssl"}, conf.proxy_listen)
     assert.is_nil(conf.ssl_cert) -- check placeholder value
     assert.is_nil(conf.ssl_cert_key)
     assert.is_nil(conf.admin_ssl_cert)
@@ -24,9 +36,8 @@ describe("Configuration loader", function()
     -- overrides
     assert.is_nil(conf.nginx_user)
     assert.equal("1",            conf.nginx_worker_processes)
-    assert.equal("0.0.0.0:9001", conf.admin_listen)
-    assert.equal("0.0.0.0:9000", conf.proxy_listen)
-    assert.equal("0.0.0.0:9443", conf.proxy_listen_ssl)
+    assert.same({"127.0.0.1:9001"}, conf.admin_listen)
+    assert.same({"0.0.0.0:9000", "0.0.0.0:9443 ssl"}, conf.proxy_listen)
     assert.is_nil(getmetatable(conf))
   end)
   it("preserves default properties if not in given file", function()
@@ -43,9 +54,8 @@ describe("Configuration loader", function()
     -- overrides
     assert.is_nil(conf.nginx_user)
     assert.equal("auto",           conf.nginx_worker_processes)
-    assert.equal("127.0.0.1:9001", conf.admin_listen)
-    assert.equal("0.0.0.0:9000",   conf.proxy_listen)
-    assert.equal("0.0.0.0:9443",   conf.proxy_listen_ssl)
+    assert.same({"127.0.0.1:9001"}, conf.admin_listen)
+    assert.same({"0.0.0.0:9000", "0.0.0.0:9443 ssl"}, conf.proxy_listen)
     assert.is_nil(getmetatable(conf))
   end)
   it("strips extraneous properties (not in defaults)", function()
@@ -57,39 +67,138 @@ describe("Configuration loader", function()
   it("returns a plugins table", function()
     local constants = require "kong.constants"
     local conf = assert(conf_loader())
-    assert.same(constants.PLUGINS_AVAILABLE, conf.plugins)
+    assert.same(constants.BUNDLED_PLUGINS, conf.loaded_plugins)
   end)
   it("loads custom plugins", function()
     local conf = assert(conf_loader(nil, {
       custom_plugins = "hello-world,my-plugin"
     }))
-    assert.True(conf.plugins["hello-world"])
-    assert.True(conf.plugins["my-plugin"])
+    assert.True(conf.loaded_plugins["hello-world"])
+    assert.True(conf.loaded_plugins["my-plugin"])
+  end)
+  it("merges plugins and custom plugins", function()
+    local conf = assert(conf_loader(nil, {
+      plugins = "foo, bar",
+      custom_plugins = "baz,foobaz",
+    }))
+    assert.is_not_nil(conf.loaded_plugins)
+    assert.same(4, tablex.size(conf.loaded_plugins))
+    assert.True(conf.loaded_plugins["foo"])
+    assert.True(conf.loaded_plugins["bar"])
+    assert.True(conf.loaded_plugins["baz"])
+    assert.True(conf.loaded_plugins["foobaz"])
   end)
   it("loads custom plugins surrounded by spaces", function()
     local conf = assert(conf_loader(nil, {
       custom_plugins = " hello-world ,   another-one  "
     }))
-    assert.True(conf.plugins["hello-world"])
-    assert.True(conf.plugins["another-one"])
+    assert.True(conf.loaded_plugins["hello-world"])
+    assert.True(conf.loaded_plugins["another-one"])
   end)
-  it("extracts ports and listen ips from proxy_listen/admin_listen", function()
+  it("extracts flags, ports and listen ips from proxy_listen/admin_listen", function()
     local conf = assert(conf_loader())
-    assert.equal("0.0.0.0", conf.admin_ip)
-    assert.equal(8001, conf.admin_port)
-    assert.equal("0.0.0.0", conf.admin_ssl_ip)
-    assert.equal(8444, conf.admin_ssl_port)
-    assert.equal("0.0.0.0", conf.proxy_ip)
-    assert.equal(8000, conf.proxy_port)
-    assert.equal("0.0.0.0", conf.proxy_ssl_ip)
-    assert.equal(8443, conf.proxy_ssl_port)
+    assert.equal("127.0.0.1", conf.admin_listeners[1].ip)
+    assert.equal(8001, conf.admin_listeners[1].port)
+    assert.equal(false, conf.admin_listeners[1].ssl)
+    assert.equal(false, conf.admin_listeners[1].http2)
+    assert.equal("127.0.0.1:8001", conf.admin_listeners[1].listener)
+
+    assert.equal("127.0.0.1", conf.admin_listeners[2].ip)
+    assert.equal(8444, conf.admin_listeners[2].port)
+    assert.equal(true, conf.admin_listeners[2].ssl)
+    assert.equal(false, conf.admin_listeners[2].http2)
+    assert.equal("127.0.0.1:8444 ssl", conf.admin_listeners[2].listener)
+
+    assert.equal("0.0.0.0", conf.proxy_listeners[1].ip)
+    assert.equal(8000, conf.proxy_listeners[1].port)
+    assert.equal(false, conf.proxy_listeners[1].ssl)
+    assert.equal(false, conf.proxy_listeners[1].http2)
+    assert.equal("0.0.0.0:8000", conf.proxy_listeners[1].listener)
+
+    assert.equal("0.0.0.0", conf.proxy_listeners[2].ip)
+    assert.equal(8443, conf.proxy_listeners[2].port)
+    assert.equal(true, conf.proxy_listeners[2].ssl)
+    assert.equal(false, conf.proxy_listeners[2].http2)
+    assert.equal("0.0.0.0:8443 ssl", conf.proxy_listeners[2].listener)
+  end)
+  it("parses IPv6 from proxy_listen/admin_listen", function()
+    local conf = assert(conf_loader(nil, {
+      proxy_listen = "[::]:8000, [::]:8443 ssl",
+      admin_listen = "[::1]:8001, [::1]:8444 ssl",
+    }))
+    assert.equal("[0000:0000:0000:0000:0000:0000:0000:0001]", conf.admin_listeners[1].ip)
+    assert.equal(8001, conf.admin_listeners[1].port)
+    assert.equal(false, conf.admin_listeners[1].ssl)
+    assert.equal(false, conf.admin_listeners[1].http2)
+    assert.equal("[0000:0000:0000:0000:0000:0000:0000:0001]:8001", conf.admin_listeners[1].listener)
+
+    assert.equal("[0000:0000:0000:0000:0000:0000:0000:0001]", conf.admin_listeners[2].ip)
+    assert.equal(8444, conf.admin_listeners[2].port)
+    assert.equal(true, conf.admin_listeners[2].ssl)
+    assert.equal(false, conf.admin_listeners[2].http2)
+    assert.equal("[0000:0000:0000:0000:0000:0000:0000:0001]:8444 ssl", conf.admin_listeners[2].listener)
+
+    assert.equal("[0000:0000:0000:0000:0000:0000:0000:0000]", conf.proxy_listeners[1].ip)
+    assert.equal(8000, conf.proxy_listeners[1].port)
+    assert.equal(false, conf.proxy_listeners[1].ssl)
+    assert.equal(false, conf.proxy_listeners[1].http2)
+    assert.equal("[0000:0000:0000:0000:0000:0000:0000:0000]:8000", conf.proxy_listeners[1].listener)
+
+    assert.equal("[0000:0000:0000:0000:0000:0000:0000:0000]", conf.proxy_listeners[2].ip)
+    assert.equal(8443, conf.proxy_listeners[2].port)
+    assert.equal(true, conf.proxy_listeners[2].ssl)
+    assert.equal(false, conf.proxy_listeners[2].http2)
+    assert.equal("[0000:0000:0000:0000:0000:0000:0000:0000]:8443 ssl", conf.proxy_listeners[2].listener)
+  end)
+  it("extracts ssl flags properly when hostnames contain them", function()
+    local conf
+    conf = assert(conf_loader(nil, {
+      proxy_listen = "ssl.myname.com:8000",
+      admin_listen = "ssl.myname.com:8001",
+    }))
+    assert.equal("ssl.myname.com", conf.proxy_listeners[1].ip)
+    assert.equal(false, conf.proxy_listeners[1].ssl)
+    assert.equal("ssl.myname.com", conf.admin_listeners[1].ip)
+    assert.equal(false, conf.admin_listeners[1].ssl)
+
+    conf = assert(conf_loader(nil, {
+      proxy_listen = "ssl_myname.com:8000 ssl",
+      admin_listen = "ssl_myname.com:8001 ssl",
+    }))
+    assert.equal("ssl_myname.com", conf.proxy_listeners[1].ip)
+    assert.equal(true, conf.proxy_listeners[1].ssl)
+    assert.equal("ssl_myname.com", conf.admin_listeners[1].ip)
+    assert.equal(true, conf.admin_listeners[1].ssl)
+  end)
+  it("extracts 'off' from proxy_listen/admin_listen", function()
+    local conf
+    conf = assert(conf_loader(nil, {
+      proxy_listen = "off",
+      admin_listen = "off",
+    }))
+    assert.same({}, conf.proxy_listeners)
+    assert.same({}, conf.admin_listeners)
+    -- off with multiple entries
+    conf = assert(conf_loader(nil, {
+      proxy_listen = "off, 0.0.0.0:9000",
+      admin_listen = "off, 127.0.0.1:9001",
+    }))
+    assert.same({}, conf.proxy_listeners)
+    assert.same({}, conf.admin_listeners)
+    -- not off with names containing 'off'
+    conf = assert(conf_loader(nil, {
+      proxy_listen = "offshore.com:9000",
+      admin_listen = "offshore.com:9001",
+    }))
+    assert.same("offshore.com", conf.proxy_listeners[1].ip)
+    assert.same("offshore.com", conf.admin_listeners[1].ip)
   end)
   it("attaches prefix paths", function()
     local conf = assert(conf_loader())
     assert.equal("/usr/local/kong/pids/nginx.pid", conf.nginx_pid)
     assert.equal("/usr/local/kong/logs/error.log", conf.nginx_err_logs)
     assert.equal("/usr/local/kong/logs/access.log", conf.nginx_acc_logs)
-    assert.equal("/usr/local/kong/logs/admin_access.log", conf.nginx_admin_acc_logs)
+    assert.equal("/usr/local/kong/logs/admin_access.log", conf.admin_acc_logs)
     assert.equal("/usr/local/kong/nginx.conf", conf.nginx_conf)
     assert.equal("/usr/local/kong/nginx-kong.conf", conf.nginx_kong_conf)
     assert.equal("/usr/local/kong/.kong_env", conf.kong_env)
@@ -109,12 +218,79 @@ describe("Configuration loader", function()
   it("overcomes penlight's list_delim option", function()
     local conf = assert(conf_loader("spec/fixtures/to-strip.conf"))
     assert.False(conf.pg_ssl)
-    assert.True(conf.plugins.foobar)
-    assert.True(conf.plugins["hello-world"])
+    assert.True(conf.loaded_plugins.foobar)
+    assert.True(conf.loaded_plugins["hello-world"])
   end)
   it("correctly parses values containing an octothorpe", function()
     local conf = assert(conf_loader("spec/fixtures/to-strip.conf"))
     assert.equal("test#123", conf.pg_password)
+  end)
+
+  describe("dynamic directives", function()
+    it("loads flexible prefix based configs from a file", function()
+      local conf = assert(conf_loader("spec/fixtures/nginx-directives.conf", {
+        plugins = "off",
+      }))
+      assert.True(search_directive(conf.nginx_http_directives,
+                  "lua_shared_dict", "custom_cache 5m"))
+      assert.True(search_directive(conf.nginx_http_directives,
+                  "large_client_header_buffers", "8 24k"))
+    end)
+
+    it("quotes numeric flexible prefix based configs", function()
+      local conf, err = conf_loader(nil, {
+        ["nginx_http_max_pending_timers"] = 4096,
+      })
+      assert.is_nil(err)
+
+      assert.True(search_directive(conf.nginx_http_directives,
+                  "max_pending_timers", [["4096"]]))
+    end)
+
+    it("accepts flexible config values with precedence", function()
+      local conf = assert(conf_loader("spec/fixtures/nginx-directives.conf", {
+        ["nginx_http_large_client_header_buffers"] = "4 16k",
+        ["nginx_http_lua_shared_dict"] = "custom_cache 2m",
+        plugins = "off",
+      }))
+
+      assert.True(search_directive(conf.nginx_http_directives,
+                  "lua_shared_dict", "custom_cache 2m"))
+      assert.True(search_directive(conf.nginx_http_directives,
+                  "large_client_header_buffers", "4 16k"))
+    end)
+  end)
+
+  describe("prometheus_metrics shm", function()
+    it("is injected if not provided via nginx_http_* directives", function()
+      local conf = assert(conf_loader())
+      assert.True(search_directive(conf.nginx_http_directives,
+                  "lua_shared_dict", "prometheus_metrics 5m"))
+    end)
+    it("size is not modified if provided via nginx_http_* directives", function()
+      local conf = assert(conf_loader(nil, {
+        plugins = "bundled",
+        nginx_http_lua_shared_dict = "prometheus_metrics 2m",
+      }))
+      assert.True(search_directive(conf.nginx_http_directives,
+                  "lua_shared_dict", "prometheus_metrics 2m"))
+    end)
+    it("is injected in addition to any shm provided via nginx_http_* directive", function()
+      local conf = assert(conf_loader(nil, {
+        plugins = "bundled",
+        nginx_http_lua_shared_dict = "custom_cache 2m",
+      }))
+      assert.True(search_directive(conf.nginx_http_directives,
+                  "lua_shared_dict", "custom_cache 2m"))
+      assert.True(search_directive(conf.nginx_http_directives,
+                  "lua_shared_dict", "prometheus_metrics 5m"))
+    end)
+    it("is not injected if prometheus plugin is disabled", function()
+      local conf = assert(conf_loader(nil, {
+        plugins = "off",
+      }))
+      assert.is_nil(conf.nginx_http_directives["lua_shared_dict"])
+    end)
   end)
 
   describe("nginx_user", function()
@@ -231,19 +407,13 @@ describe("Configuration loader", function()
         admin_listen = "127.0.0.1"
       })
       assert.is_nil(conf)
-      assert.equal("admin_listen must be of form 'address:port'", err)
+      assert.equal("admin_listen must be of form: [off] | <ip>:<port> [ssl] [http2] [proxy_protocol], [... next entry ...]", err)
 
       conf, err = conf_loader(nil, {
         proxy_listen = "127.0.0.1"
       })
       assert.is_nil(conf)
-      assert.equal("proxy_listen must be of form 'address:port'", err)
-
-      conf, err = conf_loader(nil, {
-        proxy_listen_ssl = "127.0.0.1"
-      })
-      assert.is_nil(conf)
-      assert.equal("proxy_listen_ssl must be of form 'address:port'", err)
+      assert.equal("proxy_listen must be of form: [off] | <ip>:<port> [ssl] [http2] [proxy_protocol], [... next entry ...]", err)
     end)
     it("errors when dns_resolver is not a list in ipv4/6[:port] format", function()
       local conf, err = conf_loader(nil, {
@@ -294,6 +464,13 @@ describe("Configuration loader", function()
       assert.is_nil(conf)
       assert.equal([[dns_order: invalid entry 'CXAME']], err)
     end)
+    it("errors on bad entries in headers", function()
+      local conf, err = conf_loader(nil, {
+        headers = "server_tokens,Foo-Bar",
+      })
+      assert.is_nil(conf)
+      assert.equal([[headers: invalid entry 'Foo-Bar']], err)
+    end)
     it("errors when hosts have a bad format in cassandra_contact_points", function()
       local conf, err = conf_loader(nil, {
           database                 = "cassandra",
@@ -310,16 +487,23 @@ describe("Configuration loader", function()
       assert.equal("bad cassandra contact point 'addr1:9042': port must be specified in cassandra_port", err)
       assert.is_nil(conf)
     end)
-    it("does not check SSL cert and key if SSL is off", function()
-      local conf, err = conf_loader(nil, {
-        ssl = false,
-        ssl_cert = "/path/cert.pem"
-      })
-      assert.is_nil(err)
-      assert.is_table(conf)
-    end)
     describe("SSL", function()
       describe("proxy", function()
+        it("does not check SSL cert and key if SSL is off", function()
+          local conf, err = conf_loader(nil, {
+            proxy_listen = "127.0.0.1:123",
+            ssl_cert = "/path/cert.pem"
+          })
+          assert.is_nil(err)
+          assert.is_table(conf)
+          -- specific case with 'ssl' in the name
+          local conf, err = conf_loader(nil, {
+            proxy_listen = "ssl:23",
+            proxy_ssl_cert = "/path/cert.pem"
+          })
+          assert.is_nil(err)
+          assert.is_table(conf)
+        end)
         it("requires both proxy SSL cert and key", function()
           local conf, err = conf_loader(nil, {
             ssl_cert = "/path/cert.pem"
@@ -464,6 +648,21 @@ describe("Configuration loader", function()
         end)
       end)
       describe("admin", function()
+        it("does not check SSL cert and key if SSL is off", function()
+          local conf, err = conf_loader(nil, {
+            admin_listen = "127.0.0.1:123",
+            admin_ssl_cert = "/path/cert.pem"
+          })
+          assert.is_nil(err)
+          assert.is_table(conf)
+          -- specific case with 'ssl' in the name
+          local conf, err = conf_loader(nil, {
+            admin_listen = "ssl:23",
+            admin_ssl_cert = "/path/cert.pem"
+          })
+          assert.is_nil(err)
+          assert.is_table(conf)
+        end)
         it("requires both admin SSL cert and key", function()
           local conf, err = conf_loader(nil, {
             admin_ssl_cert = "/path/cert.pem"

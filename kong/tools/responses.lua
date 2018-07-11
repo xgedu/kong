@@ -1,7 +1,7 @@
 --- Kong helper methods to send HTTP responses to clients.
 -- Can be used in the proxy (core/resolver), plugins or Admin API.
 -- Most used HTTP status codes and responses are implemented as helper methods.
--- @copyright Copyright 2016-2017 Kong Inc. All rights reserved.
+-- @copyright Copyright 2016-2018 Kong Inc. All rights reserved.
 -- @license [Apache 2.0](https://opensource.org/licenses/Apache-2.0)
 -- @module kong.tools.responses
 -- @usage
@@ -17,12 +17,14 @@
 --
 --    -- Raw send() helper:
 --    return responses.send(418, "This is a teapot")
-
+local singletons = require "kong.singletons"
+local constants = require "kong.constants"
 local cjson = require "cjson.safe"
 local meta = require "kong.meta"
 
---local server_header = _KONG._NAME .. "/" .. _KONG._VERSION
-local server_header = meta._NAME .. "/" .. meta._VERSION
+local type = type
+
+local server_header = meta._SERVER_TOKENS
 
 --- Define the most common HTTP status codes for sugar methods.
 -- Each of those status will generate a helper method (sugar)
@@ -102,6 +104,18 @@ local function send_response(status_code)
   -- @param content (Optional) The content to send as a response.
   -- @return ngx.exit (Exit current context)
   return function(content, headers)
+    local ctx = ngx.ctx
+
+    if ctx.delay_response and not ctx.delayed_response then
+      ctx.delayed_response = {
+        status_code = status_code,
+        content = content,
+        headers = headers,
+      }
+
+      coroutine.yield()
+    end
+
     if status_code == _M.status_codes.HTTP_INTERNAL_SERVER_ERROR then
       if content then
         ngx.log(ngx.ERR, tostring(content))
@@ -109,8 +123,18 @@ local function send_response(status_code)
     end
 
     ngx.status = status_code
-    ngx.header["Content-Type"] = "application/json; charset=utf-8"
-    ngx.header["Server"] = server_header
+
+    if singletons and singletons.configuration then
+      if singletons.configuration.enabled_headers[constants.HEADERS.SERVER] then
+        ngx.header[constants.HEADERS.SERVER] = server_header
+
+      else
+        ngx.header[constants.HEADERS.SERVER] = nil
+      end
+
+    else
+      ngx.header[constants.HEADERS.SERVER] = server_header
+    end
 
     if headers then
       for k, v in pairs(headers) do
@@ -128,13 +152,33 @@ local function send_response(status_code)
                                   {message = content})
       if not encoded then
         ngx.log(ngx.ERR, "[admin] could not encode value: ", err)
+        ngx.header["Content-Length"] = 0
+
+      else
+        ngx.header["Content-Type"] = "application/json; charset=utf-8"
+        ngx.header["Content-Length"] = #encoded + 1
+        ngx.say(encoded)
       end
 
-      ngx.say(encoded)
+    else
+      ngx.header["Content-Length"] = 0
     end
 
     return ngx.exit(status_code)
   end
+end
+
+function _M.flush_delayed_response(ctx)
+  ctx.delay_response = false
+
+  if type(ctx.delayed_response_callback) == "function" then
+    ctx.delayed_response_callback(ctx)
+    return -- avoid tail call
+  end
+
+  _M.send(ctx.delayed_response.status_code,
+          ctx.delayed_response.content,
+          ctx.delayed_response.headers)
 end
 
 -- Generate sugar methods (closures) for the most used HTTP status codes.

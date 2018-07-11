@@ -9,6 +9,7 @@ local pl_path = require "pl.path"
 local tablex = require "pl.tablex"
 local utils = require "kong.tools.utils"
 local log = require "kong.cmd.utils.log"
+local env = require "kong.cmd.utils.env"
 local ip = require "kong.tools.ip"
 local ciphers = require "kong.tools.ciphers"
 
@@ -17,11 +18,28 @@ local DEFAULT_PATHS = {
   "/etc/kong.conf"
 }
 
+local headers = constants.HEADERS
+local header_key_to_name = {
+  ["server_tokens"] = "server_tokens",
+  ["latency_tokens"] = "latency_tokens",
+  [string.lower(headers.VIA)] = headers.VIA,
+  [string.lower(headers.SERVER)] = headers.SERVER,
+  [string.lower(headers.PROXY_LATENCY)] = headers.PROXY_LATENCY,
+  [string.lower(headers.UPSTREAM_LATENCY)] = headers.UPSTREAM_LATENCY,
+  [string.lower(headers.UPSTREAM_STATUS)] = headers.UPSTREAM_STATUS,
+}
+
+local DYNAMIC_KEY_PREFIXES = {
+  ["nginx_http_directives"] = "nginx_http_",
+  ["nginx_proxy_directives"] = "nginx_proxy_",
+  ["nginx_admin_directives"] = "nginx_admin_",
+}
+
 local PREFIX_PATHS = {
   nginx_pid = {"pids", "nginx.pid"},
   nginx_err_logs = {"logs", "error.log"},
   nginx_acc_logs = {"logs", "access.log"},
-  nginx_admin_acc_logs = {"logs", "admin_access.log"},
+  admin_acc_logs = {"logs", "admin_access.log"},
   nginx_conf = {"nginx.conf"},
   nginx_kong_conf = {"nginx-kong.conf"}
   ;
@@ -53,18 +71,16 @@ local PREFIX_PATHS = {
 -- `array`: a comma-separated list
 local CONF_INFERENCES = {
   -- forced string inferences (or else are retrieved as numbers)
-  proxy_listen = {typ = "string"},
-  proxy_listen_ssl = {typ = "string"},
-  admin_listen = {typ = "string"},
-  admin_listen_ssl = {typ = "string"},
+  proxy_listen = {typ = "array"},
+  admin_listen = {typ = "array"},
   db_update_frequency = { typ = "number" },
   db_update_propagation = { typ = "number" },
   db_cache_ttl = { typ = "number" },
+  db_resurrect_ttl = { typ = "number" },
   nginx_user = {typ = "string"},
   nginx_worker_processes = {typ = "string"},
   upstream_keepalive = {typ = "number"},
-  server_tokens = {typ = "boolean"},
-  latency_tokens = {typ = "boolean"},
+  headers = {typ = "array"},
   trusted_ips = {typ = "array"},
   real_ip_header = {typ = "string"},
   real_ip_recursive = {typ = "ngx_boolean"},
@@ -87,7 +103,7 @@ local CONF_INFERENCES = {
   cassandra_ssl_verify = {typ = "boolean"},
   cassandra_consistency = {enum = {"ALL", "EACH_QUORUM", "QUORUM", "LOCAL_QUORUM", "ONE",
                                    "TWO", "THREE", "LOCAL_ONE"}}, -- no ANY: this is R/W
-  cassandra_lb_policy = {enum = {"RoundRobin", "DCAwareRoundRobin"}},
+  cassandra_lb_policy = {enum = {"RoundRobin", "RequestRoundRobin", "DCAwareRoundRobin", "RequestDCAwareRoundRobin"}},
   cassandra_local_datacenter = {typ = "string"},
   cassandra_repl_strategy = {enum = {"SimpleStrategy", "NetworkTopologyStrategy"}},
   cassandra_repl_factor = {typ = "number"},
@@ -102,11 +118,7 @@ local CONF_INFERENCES = {
   dns_error_ttl = {typ = "number"},
   dns_no_sync = {typ = "boolean"},
 
-  http2 = {typ = "boolean"},
-  admin_http2 = {typ = "boolean"},
-  ssl = {typ = "boolean"},
   client_ssl = {typ = "boolean"},
-  admin_ssl = {typ = "boolean"},
 
   proxy_access_log = {typ = "string"},
   proxy_error_log = {typ = "string"},
@@ -114,6 +126,7 @@ local CONF_INFERENCES = {
   admin_error_log = {typ = "string"},
   log_level = {enum = {"debug", "info", "notice", "warn",
                        "error", "crit", "alert", "emerg"}},
+  plugins = {typ = "array"},
   custom_plugins = {typ = "array"},
   anonymous_reports = {typ = "boolean"},
   nginx_daemon = {typ = "ngx_boolean"},
@@ -230,7 +243,7 @@ local function check_and_infer(conf)
     end
   end
 
-  if conf.ssl then
+  if (table.concat(conf.proxy_listen, ",") .. " "):find("%sssl[%s,]") then
     if conf.ssl_cert and not conf.ssl_cert_key then
       errors[#errors+1] = "ssl_cert_key must be specified"
     elseif conf.ssl_cert_key and not conf.ssl_cert then
@@ -260,7 +273,7 @@ local function check_and_infer(conf)
     end
   end
 
-  if conf.admin_ssl then
+  if (table.concat(conf.admin_listen, ",") .. " "):find("%sssl[%s,]") then
     if conf.admin_ssl_cert and not conf.admin_ssl_cert_key then
       errors[#errors+1] = "admin_ssl_cert_key must be specified"
     elseif conf.admin_ssl_cert_key and not conf.admin_ssl_cert then
@@ -281,6 +294,14 @@ local function check_and_infer(conf)
     end)
     if not ok then
       errors[#errors + 1] = err
+    end
+  end
+
+  if conf.headers then
+    for _, token in ipairs(conf.headers) do
+      if token ~= "off" and not header_key_to_name[string.lower(token)] then
+        errors[#errors+1] = "headers: invalid entry '" .. tostring(token) .. "'"
+      end
     end
   end
 
@@ -357,6 +378,110 @@ local function overrides(k, default_v, file_conf, arg_conf)
   return value, k
 end
 
+-- @param value The options string to check for flags (whitespace separated)
+-- @param flags List of boolean flags to check for.
+-- @returns 1) remainder string after all flags removed, 2) table with flag
+-- booleans, 3) sanitized flags string
+local function parse_option_flags(value, flags)
+  assert(type(value) == "string")
+
+  value = " " .. value .. " "
+
+  local sanitized = ""
+  local result = {}
+
+  for _, flag in ipairs(flags) do
+    local count
+    local patt = "%s" .. flag .. "%s"
+
+    value, count = value:gsub(patt, " ")
+
+    if count > 0 then
+      result[flag] = true
+      sanitized = sanitized .. " " .. flag
+
+    else
+      result[flag] = false
+    end
+  end
+
+  return pl_stringx.strip(value), result, pl_stringx.strip(sanitized)
+end
+
+-- Parses a listener address line.
+-- Supports multiple (comma separated) addresses, with 'ssl' and 'http2' flags.
+-- Pre- and postfixed whitespace as well as comma's are allowed.
+-- "off" as a first entry will return empty tables.
+-- @value list of entries (strings)
+-- @return list of parsed entries, each entry having fields `ip` (normalized string)
+-- `port` (number), `ssl` (bool), `http2` (bool), `listener` (string, full listener)
+local function parse_listeners(values)
+  local list = {}
+  local flags = { "ssl", "http2", "proxy_protocol" }
+  local usage = "must be of form: [off] | <ip>:<port> [" ..
+                table.concat(flags, "] [") .. "], [... next entry ...]"
+
+  if pl_stringx.strip(values[1]) == "off" then
+    return list
+  end
+
+  for _, entry in ipairs(values) do
+    -- parse the flags
+    local remainder, listener, cleaned_flags = parse_option_flags(entry, flags)
+
+    -- verify IP for remainder
+    local ip
+
+    if utils.hostname_type(remainder) == "name" then
+      -- it's not an IP address, so a name/wildcard/regex
+      ip = {}
+      ip.host, ip.port = remainder:match("(.+):([%d]+)$")
+
+    else
+      -- It's an IPv4 or IPv6, normalize it
+      ip = utils.normalize_ip(remainder)
+      -- nginx requires brackets in IPv6 addresses, but normalize_ip does
+      -- not include them (due to backwards compatibility with its other uses)
+      if ip and ip.type == "ipv6" then
+        ip.host = "[" .. ip.host .. "]"
+      end
+    end
+
+    if not ip or not ip.port then
+      return nil, usage
+    end
+
+    listener.ip = ip.host
+    listener.port = ip.port
+    listener.listener = ip.host .. ":" .. ip.port ..
+                        (#cleaned_flags == 0 and "" or " " .. cleaned_flags)
+
+    table.insert(list, listener)
+  end
+
+  return list
+end
+
+local function parse_nginx_directives(dyn_key_prefix, conf)
+  conf = conf or {}
+  local directives = {}
+
+  for k, v in pairs(conf) do
+    if type(k) == "string" then
+      local directive = string.match(k, dyn_key_prefix .. "(.+)")
+      if directive then
+        if tonumber(v) then
+          v = string.format("%q", v)
+        end
+
+        table.insert(directives, { name = directive, value = v })
+      end
+    end
+  end
+
+  return directives
+end
+
 --- Load Kong configuration
 -- The loaded configuration will have all properties from the default config
 -- merged with the (optionally) specified config file, environment variables
@@ -423,6 +548,51 @@ local function load(path, custom_conf)
   -- Merging & validation
   -----------------------
 
+  -- find dynamic keys that need to be loaded
+  do
+    local dynamic_keys = {}
+
+    local function find_dynamic_keys(dyn_key_prefix, t)
+      t = t or {}
+
+      for k, v in pairs(t) do
+        local directive = string.match(k, "(" .. dyn_key_prefix .. ".+)")
+        if directive then
+          dynamic_keys[directive] = true
+          t[k] = tostring(v)
+        end
+      end
+    end
+
+    local kong_env_vars = {}
+
+    -- get env vars prefixed with KONG_<dyn_key_prefix>
+    do
+      local env_vars, err = env.read_all()
+      if err then
+        return nil, err
+      end
+
+      for k, v in pairs(env_vars) do
+        local kong_var = string.match(string.lower(k), "^kong_(.+)")
+        if kong_var then
+          -- the value will be read in `overrides()`
+          kong_env_vars[kong_var] = true
+        end
+      end
+    end
+
+    for _, dyn_key_prefix in pairs(DYNAMIC_KEY_PREFIXES) do
+      find_dynamic_keys(dyn_key_prefix, custom_conf)
+      find_dynamic_keys(dyn_key_prefix, kong_env_vars)
+      find_dynamic_keys(dyn_key_prefix, from_file_conf)
+    end
+
+    -- union (add dynamic keys to `defaults` to prevent removal of the keys
+    -- during the intersection that happens later)
+    defaults = tablex.merge(defaults, dynamic_keys, true)
+  end
+
   -- merge default conf with file conf, ENV variables and arg conf (with precedence)
   local conf = tablex.pairmap(overrides, defaults, from_file_conf, custom_conf)
 
@@ -433,6 +603,14 @@ local function load(path, custom_conf)
   end
 
   conf = tablex.merge(conf, defaults) -- intersection (remove extraneous properties)
+
+  -- nginx directives from conf
+  for directives_block, dyn_key_prefix in pairs(DYNAMIC_KEY_PREFIXES) do
+    local directives = parse_nginx_directives(dyn_key_prefix, conf)
+    conf[directives_block] = setmetatable(directives, {
+      __tostring = function() return "" end,
+    })
+  end
 
   -- print alphabetically-sorted values
   do
@@ -459,13 +637,56 @@ local function load(path, custom_conf)
 
   -- merge plugins
   do
-    local custom_plugins = {}
-    for i = 1, #conf.custom_plugins do
-      local plugin_name = pl_stringx.strip(conf.custom_plugins[i])
-      custom_plugins[plugin_name] = true
+    local plugins = {}
+    if #conf.plugins > 0 and conf.plugins[1] ~= "off" then
+      for i = 1, #conf.plugins do
+        local plugin_name = pl_stringx.strip(conf.plugins[i])
+        if plugin_name ~= "off" then
+          if plugin_name == "bundled" then
+            plugins = tablex.merge(constants.BUNDLED_PLUGINS, plugins, true)
+          else
+            plugins[plugin_name] = true
+          end
+        end
+      end
     end
-    conf.plugins = tablex.merge(constants.PLUGINS_AVAILABLE, custom_plugins, true)
-    setmetatable(conf.plugins, nil) -- remove Map mt
+
+    if conf.custom_plugins and #conf.custom_plugins > 0 then
+      log.warn("the 'custom_plugins' configuration property is deprecated, " ..
+               "use 'plugins' instead")
+
+      for i = 1, #conf.custom_plugins do
+        local plugin_name = pl_stringx.strip(conf.custom_plugins[i])
+        plugins[plugin_name] = true
+      end
+    end
+
+    conf.loaded_plugins = setmetatable(plugins, {
+      __tostring = function() return "" end,
+    })
+  end
+
+  -- temporary workaround: inject an shm for prometheus plugin if needed
+  -- TODO: allow plugins to declare shm dependencies that are automatically
+  -- injected
+  if conf.loaded_plugins["prometheus"] then
+    local http_directives = conf["nginx_http_directives"]
+    local found = false
+
+    for _, directive in pairs(http_directives) do
+      if directive.name == "lua_shared_dict"
+         and string.find(directive.value, "prometheus_metrics", nil, true) then
+         found = true
+         break
+      end
+    end
+
+    if not found then
+      table.insert(http_directives, {
+        name  = "lua_shared_dict",
+        value = "prometheus_metrics 5m",
+      })
+    end
   end
 
   -- nginx user directive
@@ -478,23 +699,71 @@ local function load(path, custom_conf)
 
   -- extract ports/listen ips
   do
-    local ip_port_pat = "(.+):([%d]+)$"
-    local admin_ip, admin_port = string.match(conf.admin_listen, ip_port_pat)
-    local admin_ssl_ip, admin_ssl_port = string.match(conf.admin_listen_ssl, ip_port_pat)
-    local proxy_ip, proxy_port = string.match(conf.proxy_listen, ip_port_pat)
-    local proxy_ssl_ip, proxy_ssl_port = string.match(conf.proxy_listen_ssl, ip_port_pat)
+    local err
+    -- this meta table will prevent the parsed table to be passed on in the
+    -- intermediate Kong config file in the prefix directory
+    local mt = { __tostring = function() return "" end }
 
-    if not admin_port then return nil, "admin_listen must be of form 'address:port'"
-    elseif not proxy_port then return nil, "proxy_listen must be of form 'address:port'"
-    elseif not proxy_ssl_port then return nil, "proxy_listen_ssl must be of form 'address:port'" end
-    conf.admin_ip = admin_ip
-    conf.admin_ssl_ip = admin_ssl_ip
-    conf.proxy_ip = proxy_ip
-    conf.proxy_ssl_ip = proxy_ssl_ip
-    conf.admin_port = tonumber(admin_port)
-    conf.admin_ssl_port = tonumber(admin_ssl_port)
-    conf.proxy_port = tonumber(proxy_port)
-    conf.proxy_ssl_port = tonumber(proxy_ssl_port)
+    conf.proxy_listeners, err = parse_listeners(conf.proxy_listen)
+    if err then
+      return nil, "proxy_listen " .. err
+    end
+
+    setmetatable(conf.proxy_listeners, mt)  -- do not pass on, parse again
+    conf.proxy_ssl_enabled = false
+
+    for _, listener in ipairs(conf.proxy_listeners) do
+      if listener.ssl == true then
+        conf.proxy_ssl_enabled = true
+        break
+      end
+    end
+
+    conf.admin_listeners, err = parse_listeners(conf.admin_listen)
+    if err then
+      return nil, "admin_listen " .. err
+    end
+
+    setmetatable(conf.admin_listeners, mt)  -- do not pass on, parse again
+    conf.admin_ssl_enabled = false
+
+    for _, listener in ipairs(conf.admin_listeners) do
+      if listener.ssl == true then
+        conf.admin_ssl_enabled = true
+        break
+      end
+    end
+  end
+
+  -- load headers configuration
+  do
+    local enabled_headers = {}
+
+    for _, v in pairs(header_key_to_name) do
+      enabled_headers[v] = false
+    end
+
+    if #conf.headers > 0 and conf.headers[1] ~= "off" then
+      for _, token in ipairs(conf.headers) do
+        if token ~= "off" then
+          enabled_headers[header_key_to_name[string.lower(token)]] = true
+        end
+      end
+    end
+
+    if enabled_headers.server_tokens then
+      enabled_headers[headers.VIA] = true
+      enabled_headers[headers.SERVER] = true
+    end
+
+    if enabled_headers.latency_tokens then
+      enabled_headers[headers.PROXY_LATENCY] = true
+      enabled_headers[headers.UPSTREAM_LATENCY] = true
+    end
+
+    conf.enabled_headers = setmetatable(enabled_headers, {
+      __tostring = function() return "" end,
+    })
   end
 
   -- load absolute paths

@@ -6,9 +6,9 @@ describe("Log Serializer", function()
   before_each(function()
     ngx = {
       ctx = {
-        balancer_address = {
+        balancer_data = {
           tries = {
-            { 
+            {
               ip = "127.0.0.1",
               port = 8000,
             },
@@ -17,6 +17,7 @@ describe("Log Serializer", function()
       },
       var = {
         request_uri = "/request_uri",
+        upstream_uri = "/upstream_uri",
         scheme = "http",
         host = "test.com",
         server_port = 80,
@@ -57,7 +58,8 @@ describe("Log Serializer", function()
       assert.same({"header1", "header2"}, res.request.headers)
       assert.equal("POST", res.request.method)
       assert.same({"arg1", "arg2"}, res.request.querystring)
-      assert.equal("http://test.com:80/request_uri", res.request.request_uri)
+      assert.equal("http://test.com:80/request_uri", res.request.url)
+      assert.equal("/upstream_uri", res.upstream_uri)
       assert.equal(200, res.request.size)
       assert.equal("/request_uri", res.request.uri)
 
@@ -74,13 +76,15 @@ describe("Log Serializer", function()
       assert.is_table(res.tries)
     end)
 
-    it("serializes the API object", function()
-      ngx.ctx.api = {id = "someapi"}
+    it("serializes the matching Route and Services", function()
+      ngx.ctx.route = { id = "my_route" }
+      ngx.ctx.service = { id = "my_service" }
 
       local res = basic.serialize(ngx)
       assert.is_table(res)
 
-      assert.equal("someapi", res.api.id)
+      assert.equal("my_route", res.route.id)
+      assert.equal("my_service", res.service.id)
       assert.is_nil(res.consumer)
       assert.is_nil(res.authenticated_entity)
     end)
@@ -97,7 +101,7 @@ describe("Log Serializer", function()
     end)
 
     it("serializes the Authenticated Entity object", function()
-      ngx.ctx.authenticated_credential = {id = "somecred", 
+      ngx.ctx.authenticated_credential = {id = "somecred",
                                           consumer_id = "user1"}
 
       local res = basic.serialize(ngx)
@@ -110,7 +114,7 @@ describe("Log Serializer", function()
     end)
 
     it("serializes the tries and failure information", function()
-      ngx.ctx.balancer_address.tries = {
+      ngx.ctx.balancer_data.tries = {
         { ip = "127.0.0.1", port = 1234, state = "next",   code = 502 },
         { ip = "127.0.0.1", port = 1234, state = "failed", code = nil },
         { ip = "127.0.0.1", port = 1234 },
@@ -136,8 +140,8 @@ describe("Log Serializer", function()
         }, res.tries)
     end)
 
-    it("does not fail when the 'balancer_address' structure is missing", function()
-      ngx.ctx.balancer_address = nil
+    it("does not fail when the 'balancer_data' structure is missing", function()
+      ngx.ctx.balancer_data = nil
 
       local res = basic.serialize(ngx)
       assert.is_table(res)

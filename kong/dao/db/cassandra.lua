@@ -2,6 +2,7 @@ local timestamp = require "kong.tools.timestamp"
 local cassandra = require "cassandra"
 local Cluster = require "resty.cassandra.cluster"
 local Errors = require "kong.dao.errors"
+local db_errors = require "kong.db.errors"
 local utils = require "kong.tools.utils"
 local cjson = require "cjson"
 
@@ -28,6 +29,8 @@ _M.dao_insert_values = {
     return math.floor(timestamp.get_utc_ms())
   end
 }
+
+_M.additional_tables = { "cluster_events", "routes", "services" }
 
 function _M.new(kong_config)
   local self = _M.super.new()
@@ -84,8 +87,14 @@ function _M.new(kong_config)
   if kong_config.cassandra_lb_policy == "RoundRobin" then
     local policy = require("resty.cassandra.policies.lb.rr")
     cluster_options.lb_policy = policy.new()
+  elseif kong_config.cassandra_lb_policy == "RequestRoundRobin" then
+    local policy = require("resty.cassandra.policies.lb.req_rr")
+    cluster_options.lb_policy = policy.new()
   elseif kong_config.cassandra_lb_policy == "DCAwareRoundRobin" then
     local policy = require("resty.cassandra.policies.lb.dc_rr")
+    cluster_options.lb_policy = policy.new(kong_config.cassandra_local_datacenter)
+  elseif kong_config.cassandra_lb_policy == "RequestDCAwareRoundRobin" then
+    local policy = require("resty.cassandra.policies.lb.req_dc_rr")
     cluster_options.lb_policy = policy.new(kong_config.cassandra_local_datacenter)
   end
 
@@ -105,8 +114,13 @@ local function extract_major(release_version)
   return match(release_version, "^(%d+)%.%d")
 end
 
+local function extract_major_minor(release_version)
+  return match(release_version, "^(%d+%.%d+)")
+end
+
 local function cluster_release_version(peers)
-  local first_release_version
+  local major_minor_version
+  local major_version
   local mismatch
 
   for i = 1, #peers do
@@ -115,14 +129,17 @@ local function cluster_release_version(peers)
       return nil, 'no release_version for peer ' .. peers[i].host
     end
 
-    local major_version = extract_major(release_version)
-    if not major_version then
+    local peer_major_version = extract_major(release_version)
+    if not peer_major_version then
       return nil, 'failed to extract major version for peer ' .. peers[i].host ..
                   ' version: ' .. tostring(peers[i].release_version)
     end
+
     if i == 1 then
-      first_release_version = major_version
-    elseif major_version ~= first_release_version then
+      major_version = peer_major_version
+      major_minor_version = extract_major_minor(release_version)
+
+    elseif peer_major_version ~= major_version then
       mismatch = true
       break
     end
@@ -139,10 +156,14 @@ local function cluster_release_version(peers)
     return nil, concat(err_t, " ")
   end
 
-  return tonumber(first_release_version)
+  return {
+    major = major_version,
+    major_minor = major_minor_version,
+  }
 end
 
 _M.extract_major = extract_major
+_M.extract_major_minor = extract_major_minor
 _M.cluster_release_version = cluster_release_version
 
 function _M:init()
@@ -155,18 +176,23 @@ function _M:init()
   if err then return nil, err
   elseif not peers then return nil, 'no peers in shm' end
 
-  self.release_version, err = cluster_release_version(peers)
-  if not self.release_version then
+  local res, err = cluster_release_version(peers)
+  if not res then
     return nil, err
   end
+
+  self.major_version_n = tonumber(res.major)
+  self.major_minor_version = res.major_minor
 
   return true
 end
 
 function _M:infos()
   return {
+    db_name = "Cassandra",
     desc = "keyspace",
-    name = self.cluster_options.keyspace
+    name = self.cluster_options.keyspace,
+    version = self.major_minor_version or "unknown",
   }
 end
 
@@ -194,6 +220,14 @@ function _M:first_coordinator()
   coordinator = peer
 
   return true
+end
+
+function _M:get_coordinator()
+  if not coordinator then
+    return nil, "no coordinator has been set"
+  end
+
+  return coordinator
 end
 
 function _M:coordinator_change_keyspace(keyspace)
@@ -294,6 +328,12 @@ local function serialize_arg(field, value)
     return cassandra.uuid(value)
   elseif field.type == "timestamp" then
     return cassandra.timestamp(value)
+  elseif field.type == "boolean" then
+    if type(value) == "boolean" then
+      return cassandra.boolean(value)
+    end
+
+    return cassandra.boolean(value == "true")
   elseif field.type == "table" or field.type == "array" then
     return cjson.encode(value)
   else
@@ -334,7 +374,7 @@ local function check_unique_constraints(self, table_name, constraints, values, p
 
   for col, constraint in pairs(constraints.unique) do
     -- Only check constraints if value is non-null
-    if values[col] ~= nil then
+    if values[col] ~= nil and values[col] ~= ngx.null then
       local where, args = get_where(constraint.schema, {[col] = values[col]})
       local query = select_query(table_name, where)
       local rows, err = self:query(query, args, nil, constraint.schema)
@@ -364,20 +404,56 @@ local function check_unique_constraints(self, table_name, constraints, values, p
   return errors == nil, Errors.unique(errors)
 end
 
-local function check_foreign_constaints(self, values, constraints)
+
+local function check_foreign_key_in_new_db(new_dao, primary_key)
+  local entity, err, err_t = new_dao:select(primary_key)
+
+  if err then
+    if err_t.code == db_errors.codes.DATABASE_ERROR then
+      return false, Errors.db(err)
+    end
+
+    return false, Errors.schema(err_t)
+  end
+
+  if entity then
+    return entity
+  end
+
+  return false
+end
+
+
+local function check_foreign_constraints(self, values, constraints)
   local errors
 
   for col, constraint in pairs(constraints.foreign) do
     -- Only check foreign keys if value is non-null,
     -- if must not be null, field should be required
-    if values[col] ~= nil then
-      local res, err = self:find(constraint.table, constraint.schema, {
-        [constraint.col] = values[col]
-      })
-      if err then return nil, err
-      elseif not res then
-        errors = utils.add_error(errors, col, values[col])
+    if values[col] ~= nil and values[col] ~= ngx.null then
+
+      if self.new_db[constraint.table] then
+        -- new DAO
+        local new_dao = self.new_db[constraint.table]
+        local res, err = check_foreign_key_in_new_db(new_dao, {
+          [constraint.col] = values[col]
+        })
+        if err then return nil, err
+        elseif not res then
+          errors = utils.add_error(errors, col, values[col])
+        end
+
+      else
+        -- old DAO
+        local res, err = self:find(constraint.table, constraint.schema, {
+          [constraint.col] = values[col]
+        })
+        if err then return nil, err
+        elseif not res then
+          errors = utils.add_error(errors, col, values[col])
+        end
       end
+
     end
   end
 
@@ -392,7 +468,7 @@ function _M:insert(table_name, schema, model, constraints, options)
     return nil, err
   end
 
-  ok, err = check_foreign_constaints(self, model, constraints)
+  ok, err = check_foreign_constraints(self, model, constraints)
   if not ok then
     return nil, err
   end
@@ -515,13 +591,13 @@ end
 function _M:update(table_name, schema, constraints, filter_keys, values, nils, full, model, options)
   options = options or {}
 
-  -- must check unique constaints manually too
+  -- must check unique constraints manually too
   local ok, err = check_unique_constraints(self, table_name, constraints, values, filter_keys, true)
   if not ok then
     return nil, err
   end
 
-  ok, err = check_foreign_constaints(self, values, constraints)
+  ok, err = check_foreign_constraints(self, values, constraints)
   if not ok then
     return nil, err
   end
@@ -657,14 +733,17 @@ end
 function _M:current_migrations()
   local q_keyspace_exists, q_migrations_table_exists
 
-  if not self.release_version then
+  if not self.major_version_n then
     local ok, err = self:init()
     if not ok then
       return nil, err
     end
   end
 
-  if self.release_version == 3 then
+  -- For now we will assume that a release version number of 3 and greater
+  -- will use the same schema. This is recognized as a hotfix and will be
+  -- revisited for a more considered solution at a later time.
+  if self.major_version_n >= 3 then
     q_keyspace_exists = [[
       SELECT * FROM system_schema.keyspaces
       WHERE keyspace_name = ?

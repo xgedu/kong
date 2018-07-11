@@ -11,7 +11,9 @@ local socket = require "socket"
 local utils = require "kong.tools.utils"
 local log = require "kong.cmd.utils.log"
 local constants = require "kong.constants"
+local ffi = require "ffi"
 local fmt = string.format
+local nginx_signals = require "kong.cmd.utils.nginx_signals"
 
 local function gen_default_ssl_cert(kong_config, admin)
   -- create SSL folder
@@ -72,7 +74,7 @@ local function get_ulimit()
   end
 end
 
-local function gather_system_infos(compile_env)
+local function gather_system_infos()
   local infos = {}
 
   local ulimit, err = get_ulimit()
@@ -91,6 +93,7 @@ local function compile_conf(kong_config, conf_template)
   local compile_env = {
     _escape = ">",
     pairs = pairs,
+    ipairs = ipairs,
     tostring = tostring
   }
 
@@ -109,15 +112,45 @@ local function compile_conf(kong_config, conf_template)
   compile_env = pl_tablex.merge(compile_env, kong_config, true) -- union
   compile_env.dns_resolver = table.concat(compile_env.dns_resolver, " ")
 
-  compile_env.http2 = kong_config.http2 and " http2" or ""
-  compile_env.admin_http2 = kong_config.admin_http2 and " http2" or ""
-  compile_env.proxy_protocol = kong_config.real_ip_header == "proxy_protocol" and " proxy_protocol" or ""
+  local post_template, err = pl_template.substitute(conf_template, compile_env)
+  if not post_template then
+    return nil, "failed to compile nginx config template: " .. err
+  end
 
-  local post_template = pl_template.substitute(conf_template, compile_env)
   return string.gsub(post_template, "(${%b{}})", function(w)
     local name = w:sub(4, -3)
     return compile_env[name:lower()] or ""
   end)
+end
+
+local function write_env_file(path, data)
+  local c = require "lua_system_constants"
+
+  local flags = bit.bor(c.O_CREAT(), c.O_WRONLY())
+  local mode  = bit.bor(c.S_IRUSR(), c.S_IWUSR(), c.S_IRGRP())
+
+  local fd = ffi.C.open(path, flags, mode)
+  if fd < 0 then
+    local errno = ffi.errno()
+    return nil, "unable to open env path " .. path .. " (" ..
+                ffi.string(ffi.C.strerror(errno)) .. ")"
+  end
+
+  local n  = #data
+  local sz = ffi.C.write(fd, data, n)
+  if sz ~= n then
+    ffi.C.close(fd)
+    return nil, "wrote " .. sz .. " bytes, expected to write " .. n
+  end
+
+  local ok = ffi.C.close(fd)
+  if ok ~= 0 then
+    local errno = ffi.errno()
+    return nil, "failed to close fd (" ..
+                ffi.string(ffi.C.strerror(errno)) .. ")"
+  end
+
+  return true
 end
 
 local function compile_kong_conf(kong_config)
@@ -163,15 +196,16 @@ local function prepare_prefix(kong_config, nginx_custom_template_path)
       return nil, err
     end
   end
-  if not pl_path.exists(kong_config.nginx_admin_acc_logs) then
-    local ok, err = pl_file.write(kong_config.nginx_admin_acc_logs, "")
+  if not pl_path.exists(kong_config.admin_acc_logs) then
+    local ok, err = pl_file.write(kong_config.admin_acc_logs, "")
     if not ok then
       return nil, err
     end
   end
 
   -- generate default SSL certs if needed
-  if kong_config.ssl and not kong_config.ssl_cert and not kong_config.ssl_cert_key then
+  if kong_config.proxy_ssl_enabled and not kong_config.ssl_cert and
+     not kong_config.ssl_cert_key then
     log.verbose("SSL enabled, no custom certificate set: using default certificate")
     local ok, err = gen_default_ssl_cert(kong_config)
     if not ok then
@@ -180,7 +214,8 @@ local function prepare_prefix(kong_config, nginx_custom_template_path)
     kong_config.ssl_cert = kong_config.ssl_cert_default
     kong_config.ssl_cert_key = kong_config.ssl_cert_key_default
   end
-  if kong_config.admin_ssl and not kong_config.admin_ssl_cert and not kong_config.admin_ssl_cert_key then
+  if kong_config.admin_ssl_enabled and not kong_config.admin_ssl_cert and
+     not kong_config.admin_ssl_cert_key then
     log.verbose("Admin SSL enabled, no custom certificate set: using default certificate")
     local ok, err = gen_default_ssl_cert(kong_config, true)
     if not ok then
@@ -221,6 +256,12 @@ local function prepare_prefix(kong_config, nginx_custom_template_path)
   end
   pl_file.write(kong_config.nginx_kong_conf, nginx_kong_conf)
 
+  -- testing written NGINX conf
+  local ok, err = nginx_signals.check_conf(kong_config)
+  if not ok then
+    return nil, err
+  end
+
   -- write kong.conf in prefix (for workers and CLI)
   local buf = {
     "# *************************",
@@ -235,19 +276,22 @@ local function prepare_prefix(kong_config, nginx_custom_template_path)
 
   for k, v in pairs(kong_config) do
     if type(v) == "table" then
-      v = table.concat(v, ",")
+      if (getmetatable(v) or {}).__tostring then
+        -- the 'tostring' meta-method knows how to serialize
+        v = tostring(v)
+      else
+        v = table.concat(v, ",")
+      end
     end
     if v ~= "" then
       buf[#buf+1] = k .. " = " .. tostring(v)
     end
   end
 
-  pl_file.write(kong_config.kong_env, table.concat(buf, "\n"))
-
-  -- ... yeah this sucks. thanks fwrite.
-  local ok, _, _, err = pl_utils.executeex("chmod 640 " .. kong_config.kong_env)
+  local ok, err = write_env_file(kong_config.kong_env,
+                                 table.concat(buf, "\n") .. "\n")
   if not ok then
-    log.warn("Unable to set kong env permissions: ", err)
+    return nil, err
   end
 
   return true

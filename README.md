@@ -1,111 +1,108 @@
-# The Microservice API Gateway [![Build Status][badge-travis-image]][badge-travis-url]
 [![][kong-logo]][kong-url]
+
+[![Build Status][badge-travis-image]][badge-travis-url]
 
 Kong is a cloud-native, fast, scalable, and distributed Microservice
 Abstraction Layer *(also known as an API Gateway, API Middleware or in some
-cases Service Mesh)*.
+cases Service Mesh)*. Made available as an open-source project in 2015, its
+core values are high performance and extensibility.
 
-Backed by the battle-tested **NGINX** with a focus on high performance, Kong
-was made available as an open-source platform in 2015. Under active
-development, Kong is used in production at thousands of organizations from
-startups, Global 5000 and Government organizations.
+Actively maintained, Kong is widely used in production at companies ranging
+from startups to Global 5000 as well as government organizations.
 
-[Website][kong-url] |
-[Docs](https://getkong.org/docs) |
-[Installation](https://getkong.org/install) |
-[Blog](http://konghq.com/blog) |
-[Mailing List][google-groups-url] |
-[Gitter Chat][gitter-url] |
-freenode: [#kong](http://webchat.freenode.net/?channels=kong)
+[Installation](https://konghq.com/install) |
+[Documentation](https://getkong.org/docs) |
+[Forum](https://discuss.konghq.com) |
+[Blog](https://konghq.com/blog) |
+IRC (freenode): [#kong](http://webchat.freenode.net/?channels=kong)
 
 ## Summary
 
-- [**Features**](#features)
 - [**Why Kong?**](#why-kong)
-- [**Benchmarks**](#benchmarks)
+- [**Features**](#features)
 - [**Distributions**](#distributions)
 - [**Development**](#development)
 - [**Enterprise Support & Demo**](#enterprise-support--demo)
 - [**License**](#license)
-
-## Features
-
-- **Cloud-Native**: Platform agnostic, Kong can run from bare metal to
-  Kubernetes.
-- **Dynamic Load Balancing**: Load balance traffic across multiple backend
-  services.
-- **Service Discovery**: Resolve SRV records in third-party DNS resolvers like
-  Consul.
-- **Serverless**: Invoke and secure AWS Lambda or OpenWhisk fuctions directly
-  from Kong.
-- **WebSockets**: Communicate to your upstream services via WebSockets.
-- **OAuth2.0**: Add easily an OAuth2.0 authentication to your APIs.
-- **Logging**: Log requests and responses to your system over HTTP, TCP, UDP or
-  to disk.
-- **Security**: ACL, Bot detection, whitelist/blacklist IPs, etc...
-- **Syslog**: Logging to System log.
-- **SSL**: Setup a Specific SSL Certificate for an underlying service or API.
-- **Monitoring**: Live monitoring provides key load and performance server
-  metrics.
-- **Authentications**: HMAC, JWT, Basic, and more.
-- **Rate-limiting**: Block and throttle requests based on many variable.
-- **Transformations**: Add, remove or manipulate HTTP requests and responses.
-- **Caching**: Cache and serve responses at the proxy layer.
-- **CLI**: Control your Kong cluster from the command line just like Neo in The
-  Matrix.
-- **REST API**: Kong can be operated with its RESTful API for maximum
-  flexibility.
-- **Geo-Replicated**: Configs are always up-to-date across different regions.
-- **Failure Detection & Recovery**: Kong is unaffected if one of your Cassandra
-  nodes goes down.
-- **Clustering**: All Kongs auto-join the cluster keeping their config updated
-  across nodes.
-- **Scalability**: Distributed by nature, Kong scales horizontally simply by
-  adding nodes.
-- **Performance**: Kong handles load with ease by scaling and using NGINX at
-  the core.
-- **Plugins**: Extendable architecture for adding functionality to Kong and APIs.
-
-For more info about plugins, you can check out the [Plugin
-Gallery](https://konghq.com/plugins/).
 
 ## Why Kong?
 
 If you are building for web, mobile or IoT (Internet of Things) you will likely
 end up needing common functionality to run your actual software. Kong can
 help by acting as a gateway (or a sidecar) for microservices requests while
-providing load balancing, logging, authentication, rate-limiting and more
-through plugins.
+providing load balancing, logging, authentication, rate-limiting,
+transformations, and more through plugins.
 
 [![][kong-benefits]][kong-url]
 
-## Benchmarks
+## Features
 
-We've load tested Kong and Cassandra on AWS; you can see our [benchmark report
-here](https://getkong.org/about/benchmark/).
+- **Cloud-Native**: Platform agnostic, Kong can run from bare metal to
+  Kubernetes.
+- **Dynamic Load Balancing**: Load balance traffic across multiple upstream
+  services.
+- **Hash-based Load Balancing**: Load balance with consistent hashing/sticky
+  sessions.
+- **Circuit-Breaker**: Intelligent tracking of unhealthy upstream services.
+- **Health Checks:** Active and passive monitoring of your upstream services.
+- **Service Discovery**: Resolve SRV records in third-party DNS resolvers like
+  Consul.
+- **Serverless**: Invoke and secure AWS Lambda or OpenWhisk functions directly
+  from Kong.
+- **WebSockets**: Communicate to your upstream services via WebSockets.
+- **OAuth2.0**: Easily add OAuth2.0 authentication to your APIs.
+- **Logging**: Log requests and responses to your system over HTTP, TCP, UDP,
+  or to disk.
+- **Security**: ACL, Bot detection, whitelist/blacklist IPs, etc...
+- **Syslog**: Logging to System log.
+- **SSL**: Setup a Specific SSL Certificate for an underlying service or API.
+- **Monitoring**: Live monitoring provides key load and performance server
+  metrics.
+- **Forward Proxy**: Make Kong connect to intermediary transparent HTTP proxies.
+- **Authentications**: HMAC, JWT, Basic, and more.
+- **Rate-limiting**: Block and throttle requests based on many variables.
+- **Transformations**: Add, remove, or manipulate HTTP requests and responses.
+- **Caching**: Cache and serve responses at the proxy layer.
+- **CLI**: Control your Kong cluster from the command line.
+- **REST API**: Kong can be operated with its RESTful API for maximum
+  flexibility.
+- **Geo-Replicated**: Configs are always up-to-date across different regions.
+- **Failure Detection & Recovery**: Kong is unaffected if one of your Cassandra
+  nodes goes down.
+- **Clustering**: All Kong nodes auto-join the cluster keeping their config
+  updated across nodes.
+- **Scalability**: Distributed by nature, Kong scales horizontally by simply
+  adding nodes.
+- **Performance**: Kong handles load with ease by scaling and using NGINX at
+  the core.
+- **Plugins**: Extendable architecture for adding functionality to Kong and
+  APIs.
+
+For more info about plugins, you can check out the [Plugins
+Hub](https://konghq.com/plugins/).
 
 ## Distributions
 
 Kong comes in many shapes. While this repository contains its core's source
 code, other repos are also under active development:
 
-- [Kong Docker](https://github.com/Mashape/docker-kong): A Dockerfile for
+- [Kong Docker](https://github.com/Kong/docker-kong): A Dockerfile for
   running Kong in Docker.
-- [Kong Packages](https://github.com/Mashape/kong/releases): Pre-built packages
+- [Kong Packages](https://github.com/Kong/kong/releases): Pre-built packages
   for Debian, Red Hat, and OS X distributions (shipped with each release).
-- [Kong Vagrant](https://github.com/Mashape/kong-vagrant): A Vagrantfile for
+- [Kong Vagrant](https://github.com/Kong/kong-vagrant): A Vagrantfile for
   provisioning a development ready environment for Kong.
-- [Kong Homebrew](https://github.com/Mashape/homebrew-kong): Homebrew Formula
+- [Kong Homebrew](https://github.com/Kong/homebrew-kong): Homebrew Formula
   for Kong.
-- [Kong CloudFormation](https://github.com/Mashape/kong-dist-cloudformation):
+- [Kong CloudFormation](https://github.com/Kong/kong-dist-cloudformation):
   Kong in a 1-click deployment for AWS EC2
 - [Kong AWS AMI](https://aws.amazon.com/marketplace/pp/B014GHERVU): Kong AMI on
   the AWS Marketplace.
-- [Kong on Microsoft Azure](https://github.com/Mashape/kong-dist-azure): Run Kong
+- [Kong on Microsoft Azure](https://github.com/Kong/kong-dist-azure): Run Kong
   using Azure Resource Manager.
 - [Kong on Heroku](https://github.com/heroku/heroku-kong): Deploy Kong on
   Heroku in one click.
-- [Kong and Instaclustr](https://www.instaclustr.com/solutions/kong/): Let
+- [Kong and Instaclustr](https://www.instaclustr.com/solutions/managed-cassandra-for-kong/): Let
   Instaclustr manage your Cassandra cluster.
 
 
@@ -122,7 +119,7 @@ Reference](https://getkong.org/docs/latest/lua-reference/).
 #### Vagrant
 
 You can use a Vagrant box running Kong and Postgres that you can find at
-[Mashape/kong-vagrant](https://github.com/Mashape/kong-vagrant).
+[Kong/kong-vagrant](https://github.com/Kong/kong-vagrant).
 
 #### Source Install
 
@@ -135,7 +132,7 @@ Instead of following the second step (Install Kong), clone this repository
 and install the latest Lua sources instead of the currently released ones:
 
 ```shell
-$ git clone https://github.com/Mashape/kong
+$ git clone https://github.com/Kong/kong
 $ cd kong/
 
 # you might want to switch to the development branch. See CONTRIBUTING.md
@@ -147,7 +144,7 @@ $ luarocks make
 
 #### Running for development
 
-Check out the [development section](https://github.com/Mashape/kong/blob/next/kong.conf.default#L244)
+Check out the [development section](https://github.com/Kong/kong/blob/next/kong.conf.default#L244)
 of the default configuration file for properties to tweak in order to ease
 the development process for Kong.
 
@@ -233,7 +230,7 @@ Enterprise](https://konghq.com/kong-enterprise-edition/).
 ## License
 
 ```
-Copyright 2016-2017 Kong Inc.
+Copyright 2016-2018 Kong Inc.
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -249,15 +246,11 @@ limitations under the License.
 ```
 
 [kong-url]: https://konghq.com/
-[kong-logo]: https://cl.ly/030V1u02090Q/unnamed.png
-[kong-benefits]: https://cl.ly/002i2Z432A1s/Image%202017-10-16%20at%2012.30.08%20AM.png
-[gitter-url]: https://gitter.im/Mashape/kong
-[gitter-badge]: https://img.shields.io/badge/Gitter-Join%20Chat-blue.svg
-[google-groups-url]: https://groups.google.com/forum/#!forum/konglayer
-[badge-travis-url]: https://travis-ci.org/Mashape/kong/branches
-[badge-travis-image]: https://travis-ci.org/Mashape/kong.svg?branch=master
+[kong-logo]: https://konghq.com/wp-content/uploads/2018/05/kong-logo-github-readme.png
+[kong-benefits]: https://konghq.com/wp-content/uploads/2018/05/kong-benefits-github-readme.png
+[badge-travis-url]: https://travis-ci.org/Kong/kong/branches
+[badge-travis-image]: https://travis-ci.org/Kong/kong.svg?branch=master
 
 [busted]: https://github.com/Olivine-Labs/busted
 [luacheck]: https://github.com/mpeterv/luacheck
-[Luarocks]: https://luarocks.org
 

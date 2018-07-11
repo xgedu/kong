@@ -1,16 +1,13 @@
 local api_schema = require "kong.dao.schemas.apis"
-local consumer_schema = require "kong.dao.schemas.consumers"
 local plugins_schema = require "kong.dao.schemas.plugins"
 local targets_schema = require "kong.dao.schemas.targets"
 local upstreams_schema = require "kong.dao.schemas.upstreams"
 local validations = require "kong.dao.schemas_validation"
 local validate_entity = validations.validate_entity
-local utils = require "kong.tools.utils"
 
 describe("Entities Schemas", function()
 
   for k, schema in pairs({api = api_schema,
-                          consumer = consumer_schema,
                           plugins = plugins_schema,
                           targets = targets_schema,
                           upstreams = upstreams_schema}) do
@@ -593,33 +590,6 @@ describe("Entities Schemas", function()
   end)
 
   --
-  -- Consumer
-  --
-
-  describe("Consumers", function()
-    it("should require a `custom_id` or `username`", function()
-      local valid, errors = validate_entity({}, consumer_schema)
-      assert.is_false(valid)
-      assert.equal("At least a 'custom_id' or a 'username' must be specified", errors.username)
-      assert.equal("At least a 'custom_id' or a 'username' must be specified", errors.custom_id)
-
-      valid, errors = validate_entity({ username = "" }, consumer_schema)
-      assert.is_false(valid)
-      assert.equal("At least a 'custom_id' or a 'username' must be specified", errors.username)
-      assert.equal("At least a 'custom_id' or a 'username' must be specified", errors.custom_id)
-
-      valid, errors = validate_entity({ username = true }, consumer_schema)
-      assert.is_false(valid)
-      assert.equal("username is not a string", errors.username)
-      assert.equal("At least a 'custom_id' or a 'username' must be specified", errors.custom_id)
-    end)
-
-    it("has a cache_key", function()
-      assert.is_table(consumer_schema.cache_key)
-    end)
-  end)
-
-  --
   -- Plugins
   --
 
@@ -628,7 +598,22 @@ describe("Entities Schemas", function()
     local dao_stub = {
       find_all = function()
         return {}
-      end
+      end,
+      db = {
+        new_db = {
+          services = {
+            select = function() return true end,
+            check_foreign_key = function() return true end,
+          },
+          routes = {
+            select = function() return true end,
+            check_foreign_key = function() return true end,
+          },
+          consumers = {
+            check_foreign_key = function() return true end,
+          },
+        }
+      }
     }
 
     it("has a cache_key", function()
@@ -642,12 +627,12 @@ describe("Entities Schemas", function()
     end)
     it("should validate a plugin configuration's `config` field", function()
       -- Success
-      local plugin = {name = "key-auth", api_id = "stub", config = {key_names = {"x-kong-key"}}}
+      local plugin = {name = "key-auth", service_id = "stub", config = {key_names = {"x-kong-key"}}}
       local valid = validate_entity(plugin, plugins_schema, {dao = dao_stub})
       assert.is_true(valid)
 
       -- Failure
-      plugin = {name = "rate-limiting", api_id = "stub", config = { second = "hello" }}
+      plugin = {name = "rate-limiting", service_id = "stub", config = { second = "hello" }}
 
       local valid, errors = validate_entity(plugin, plugins_schema, {dao = dao_stub})
       assert.is_false(valid)
@@ -655,7 +640,7 @@ describe("Entities Schemas", function()
     end)
     it("should have an empty config if none is specified and if the config schema does not have default", function()
       -- Insert key-auth, whose config has some default values that should be set
-      local plugin = {name = "key-auth", api_id = "stub"}
+      local plugin = {name = "key-auth", service_id = "stub"}
       local valid = validate_entity(plugin, plugins_schema, {dao = dao_stub})
       assert.same({
           key_names = {"apikey"},
@@ -668,7 +653,7 @@ describe("Entities Schemas", function()
     end)
     it("should be valid if no value is specified for a subfield and if the config schema has default as empty array", function()
       -- Insert response-transformer, whose default config has no default values, and should be empty
-      local plugin2 = {name = "response-transformer", api_id = "stub"}
+      local plugin2 = {name = "response-transformer", service_id = "stub"}
       local valid = validate_entity(plugin2, plugins_schema, {dao = dao_stub})
       assert.same({
         remove = {
@@ -700,17 +685,81 @@ describe("Entities Schemas", function()
           }
         }
 
-        plugins_schema.fields.config.schema = function()
-          return stub_config_schema
+        do
+          local old_schema_loader = plugins_schema.fields.config.schema
+
+          plugins_schema.fields.config.schema = function()
+            return stub_config_schema
+          end
+
+          finally(function()
+            plugins_schema.fields.config.schema = old_schema_loader
+          end)
         end
 
-        local valid, _, err = validate_entity({name = "stub", api_id = "0000", consumer_id = "0000", config = {string = "foo"}}, plugins_schema)
+        local valid, _, err = validate_entity({name = "stub", service_id = "0000", consumer_id = "0000", config = {string = "foo"}}, plugins_schema, {dao = dao_stub})
         assert.is_false(valid)
         assert.equal("No consumer can be configured for that plugin", err.message)
 
-        valid, err = validate_entity({name = "stub", api_id = "0000", config = {string = "foo"}}, plugins_schema, {dao = dao_stub})
+        valid, err = validate_entity({name = "stub", service_id = "0000", config = {string = "foo"}}, plugins_schema, {dao = dao_stub})
         assert.is_true(valid)
         assert.falsy(err)
+      end)
+
+      it("rejects a plugin if configured for both api_id and route_id", function()
+        local valid, _, self_err = validate_entity({
+          name = "request-transformer",
+          api_id = "api_id",
+          route_id = "route_id",
+        }, plugins_schema)
+        assert.is_false(valid)
+        assert.same({
+          message = "cannot configure plugin with api_id and one of route_id or service_id",
+          schema = true,
+        }, self_err)
+      end)
+
+      it("rejects a plugin if configured for both api_id and service_id", function()
+        local valid, _, self_err = validate_entity({
+          name = "request-transformer",
+          api_id = "api_id",
+          service_id = "service_id",
+        }, plugins_schema)
+        assert.is_false(valid)
+        assert.same({
+          message = "cannot configure plugin with api_id and one of route_id or service_id",
+          schema = true,
+        }, self_err)
+      end)
+
+      it("accepts a plugin if configured with api_id", function()
+        local valid, errors, self_err = validate_entity({
+          name = "key-auth",
+          api_id = "api_id",
+        }, plugins_schema, { dao = dao_stub })
+        assert.is_nil(errors)
+        assert.is_nil(self_err)
+        assert.is_true(valid)
+      end)
+
+      it("accepts a plugin if configured with route_id", function()
+        local valid, errors, self_err = validate_entity({
+          name = "key-auth",
+          route_id = "route_id",
+        }, plugins_schema, { dao = dao_stub })
+        assert.is_nil(errors)
+        assert.is_nil(self_err)
+        assert.is_true(valid)
+      end)
+
+      it("accepts a plugin if configured with service_id", function()
+        local valid, errors, self_err = validate_entity({
+          name = "key-auth",
+          service_id = "service_id",
+        }, plugins_schema, { dao = dao_stub })
+        assert.is_nil(errors)
+        assert.is_nil(self_err)
+        assert.is_true(valid)
       end)
     end)
   end)
@@ -720,7 +769,7 @@ describe("Entities Schemas", function()
   --
 
   describe("Upstreams", function()
-    local slots_default, slots_min, slots_max = 100, 10, 2^16
+    local slots_default, slots_min, slots_max = 10000, 10, 2^16
 
     it("should require a valid `name` and no port", function()
       local valid, errors, check
@@ -749,10 +798,138 @@ describe("Entities Schemas", function()
       assert.is_nil(check)
     end)
 
+    it("should verify healthcheck configuration", function()
+
+      -- tests for failure
+      local tests = {
+        {{ active = { timeout = -1 }}, "between 0 and 65535" },
+        {{ active = { timeout = 1e+42 }}, "between 0 and 65535" },
+        {{ active = { concurrency = 0.5 }}, "must be an integer" },
+        {{ active = { concurrency = 0 }}, "must be an integer" },
+        {{ active = { concurrency = -10 }}, "must be an integer" },
+        {{ active = { http_path = "" }}, "is empty" },
+        {{ active = { http_path = "ovo" }}, "must be prefixed with slash" },
+        {{ active = { healthy = { interval = -1 }}}, "between 0 and 65535" },
+        {{ active = { healthy = { interval = 1e+42 }}}, "between 0 and 65535" },
+        {{ active = { healthy = { http_statuses = 404 }}}, "not an array" },
+        {{ active = { healthy = { http_statuses = { "ovo" }}}}, "not a number" },
+        {{ active = { healthy = { http_statuses = { -1 }}}}, "status code" },
+        {{ active = { healthy = { http_statuses = { 99 }}}}, "status code" },
+        {{ active = { healthy = { http_statuses = { 1000 }}}}, "status code" },
+        {{ active = { healthy = { http_statuses = { 111.314 }}}}, "must be an integer" },
+        {{ active = { healthy = { successes = 0.5 }}}, "must be 0 (disabled), or an integer" },
+        --{{ active = { healthy = { successes = 0 }}}, "must be an integer" },
+        {{ active = { healthy = { successes = -1 }}}, "an integer between" },
+        {{ active = { unhealthy = { interval = -1 }}}, "between 0 and 65535" },
+        {{ active = { unhealthy = { interval = 1e+42 }}}, "between 0 and 65535" },
+        {{ active = { unhealthy = { http_statuses = 404 }}}, "not an array" },
+        {{ active = { unhealthy = { http_statuses = { "ovo" }}}}, "not a number" },
+        {{ active = { unhealthy = { http_statuses = { -1 }}}}, "status code" },
+        {{ active = { unhealthy = { http_statuses = { 99 }}}}, "status code" },
+        {{ active = { unhealthy = { http_statuses = { 1000 }}}}, "status code" },
+        {{ active = { unhealthy = { tcp_failures = 0.5 }}}, "must be 0 (disabled), or an integer" },
+        --{{ active = { unhealthy = { tcp_failures = 0 }}}, "must be an integer" },
+        {{ active = { unhealthy = { tcp_failures = -1 }}}, "an integer between" },
+        {{ active = { unhealthy = { timeouts = 0.5 }}}, "must be 0 (disabled), or an integer" },
+        --{{ active = { unhealthy = { timeouts = 0 }}}, "must be an integer" },
+        {{ active = { unhealthy = { timeouts = -1 }}}, "an integer between" },
+        {{ active = { unhealthy = { http_failures = 0.5 }}}, "must be 0 (disabled), or an integer" },
+        {{ active = { unhealthy = { http_failures = -1 }}}, "an integer between" },
+        {{ passive = { healthy = { http_statuses = 404 }}}, "not an array" },
+        {{ passive = { healthy = { http_statuses = { "ovo" }}}}, "not a number" },
+        {{ passive = { healthy = { http_statuses = { -1 }}}}, "status code" },
+        {{ passive = { healthy = { http_statuses = { 99 }}}}, "status code" },
+        {{ passive = { healthy = { http_statuses = { 1000 }}}}, "status code" },
+        {{ passive = { healthy = { successes = 0.5 }}}, "must be 0 (disabled), or an integer" },
+        --{{ passive = { healthy = { successes = 0 }}}, "must be an integer" },
+        {{ passive = { healthy = { successes = -1 }}}, "an integer between" },
+        {{ passive = { unhealthy = { http_statuses = 404 }}}, "not an array" },
+        {{ passive = { unhealthy = { http_statuses = { "ovo" }}}}, "not a number" },
+        {{ passive = { unhealthy = { http_statuses = { -1 }}}}, "status code" },
+        {{ passive = { unhealthy = { http_statuses = { 99 }}}}, "status code" },
+        {{ passive = { unhealthy = { http_statuses = { 1000 }}}}, "status code" },
+        {{ passive = { unhealthy = { tcp_failures = 0.5 }}}, "must be 0 (disabled), or an integer" },
+        --{{ passive = { unhealthy = { tcp_failures = 0 }}}, "must be an integer" },
+        {{ passive = { unhealthy = { tcp_failures = -1 }}}, "an integer between" },
+        {{ passive = { unhealthy = { timeouts = 0.5 }}}, "must be 0 (disabled), or an integer" },
+        --{{ passive = { unhealthy = { timeouts = 0 }}}, "must be an integer" },
+        {{ passive = { unhealthy = { timeouts = -1 }}}, "an integer between" },
+        {{ passive = { unhealthy = { http_failures = 0.5 }}}, "must be 0 (disabled), or an integer" },
+        --{{ passive = { unhealthy = { http_failures = 0 }}}, "must be an integer" },
+        {{ passive = { unhealthy = { http_failures = -1 }}}, "an integer between" },
+        --]]
+      }
+      for _, test in ipairs(tests) do
+        local entity = {
+          name = "x",
+          healthchecks = test[1],
+        }
+
+        -- convert nested table to field name
+        local path = { "healthchecks" }
+        local t = test[1]
+        while type(t) == "table" and type(next(t)) == "string" do
+          table.insert(path, (next(t)))
+          t = t[next(t)]
+        end
+        local field_name = table.concat(path, ".")
+
+        local valid, errors = validate_entity(entity, upstreams_schema)
+        assert.is_false(valid)
+        assert.match(test[2], errors[field_name], nil, true)
+      end
+
+      -- tests for success
+      tests = {
+        { active = { timeout = 0.5 }},
+        { active = { timeout = 1 }},
+        { active = { concurrency = 2 }},
+        { active = { http_path = "/" }},
+        { active = { http_path = "/test" }},
+        { active = { healthy = { interval = 0 }}},
+        { active = { healthy = { http_statuses = { 200, 300 } }}},
+        { active = { healthy = { successes = 2 }}},
+        { active = { unhealthy = { interval = 0 }}},
+        { active = { unhealthy = { http_statuses = { 404 }}}},
+        { active = { unhealthy = { tcp_failures = 3 }}},
+        { active = { unhealthy = { timeouts = 9 }}},
+        { active = { unhealthy = { http_failures = 2 }}},
+        { passive = { healthy = { http_statuses = { 200, 201 } }}},
+        { passive = { healthy = { successes = 2 }}},
+        { passive = { unhealthy = { http_statuses = { 400, 500 } }}},
+        { passive = { unhealthy = { tcp_failures = 8 }}},
+        { passive = { unhealthy = { timeouts = 1 }}},
+        { passive = { unhealthy = { http_failures = 2 }}},
+      }
+      for _, test in ipairs(tests) do
+        local entity = {
+          name = "x",
+          healthchecks = test,
+        }
+
+        local valid = validate_entity(entity, upstreams_schema)
+        assert.is_true(valid)
+      end
+
+    end)
+
+    it("creates an upstream with the default values", function()
+      local default = upstreams_schema.fields.healthchecks.default
+      local entity = {
+        name = "x",
+        healthchecks = default,
+      }
+
+      local valid, errors = validate_entity(entity, upstreams_schema)
+      assert.is_nil(errors)
+      assert.is_true(valid)
+    end)
+
     it("should require (optional) slots in a valid range", function()
       local valid, errors, check, _
       local data = { name = "valid.host.name" }
-      valid, _, _ = validate_entity(data, upstreams_schema)
+      valid, errors, _ = validate_entity(data, upstreams_schema)
+      assert.is_nil(errors)
       assert.is_true(valid)
       assert.equal(slots_default, data.slots)
 
@@ -779,94 +956,6 @@ describe("Entities Schemas", function()
         assert.is_nil(errors)
         assert.is_nil(check)
       end
-    end)
-
-    it("should require (optional) orderlist to be a proper list", function()
-      local data, valid, errors, check
-      local function validate_order(list, size)
-        assert(type(list) == "table", "expected list table, got " .. type(list))
-        assert(next(list), "table is empty")
-        assert(type(size) == "number", "expected size number, got " .. type(size))
-        assert(size > 0, "expected size to be > 0")
-        local c = {}
-        local max = 0
-        for i,v in pairs(list) do  --> note: pairs, not ipairs!!
-          if i > max then max = i end
-          c[i] = v
-        end
-        assert(max == size, "highest key is not equal to the size")
-        table.sort(c)
-        max = 0
-        for i, v in ipairs(c) do
-          assert(i == v, "expected sorted table to have equal keys and values")
-          if i>max then max = i end
-        end
-        assert(max == size, "expected array, but got list with holes")
-      end
-
-      for _ = 1, 20 do  -- have Kong generate 20 random sized arrays and verify them
-        data = {
-          name = "valid.host.name",
-          slots = math.random(slots_min, slots_max)
-        }
-        valid, errors, check = validate_entity(data, upstreams_schema)
-        assert.is_true(valid)
-        assert.is_nil(errors)
-        assert.is_nil(check)
-        validate_order(data.orderlist, data.slots)
-      end
-
-      local lst = { 9,7,5,3,1,2,4,6,8,10 }   -- a valid list
-      data = {
-        name = "valid.host.name",
-        slots = 10,
-        orderlist = utils.shallow_copy(lst)
-      }
-      valid, errors, check = validate_entity(data, upstreams_schema)
-      assert.is_true(valid)
-      assert.is_nil(errors)
-      assert.is_nil(check)
-      assert.same(lst, data.orderlist)
-
-      data = {
-        name = "valid.host.name",
-        slots = 10,
-        orderlist = { 9,7,5,3,1,2,4,6,8 }   -- too short (9)
-      }
-      valid, errors, check = validate_entity(data, upstreams_schema)
-      assert.is_false(valid)
-      assert.is_nil(errors)
-      assert.are.equal("size mismatch between 'slots' and 'orderlist'",check.message)
-
-      data = {
-        name = "valid.host.name",
-        slots = 10,
-        orderlist = { 9,7,5,3,1,2,4,6,8,10,11 }   -- too long (11)
-      }
-      valid, errors, check = validate_entity(data, upstreams_schema)
-      assert.is_false(valid)
-      assert.is_nil(errors)
-      assert.are.equal("size mismatch between 'slots' and 'orderlist'",check.message)
-
-      data = {
-        name = "valid.host.name",
-        slots = 10,
-        orderlist = { 9,7,5,3,1,2,4,6,8,8 }   -- a double value (2x 8, no 10)
-      }
-      valid, errors, check = validate_entity(data, upstreams_schema)
-      assert.is_false(valid)
-      assert.is_nil(errors)
-      assert.are.equal("invalid orderlist",check.message)
-
-      data = {
-        name = "valid.host.name",
-        slots = 10,
-        orderlist = { 9,7,5,3,1,2,4,6,8,11 }   -- a hole (10 missing)
-      }
-      valid, errors, check = validate_entity(data, upstreams_schema)
-      assert.is_false(valid)
-      assert.is_nil(errors)
-      assert.are.equal("invalid orderlist",check.message)
     end)
 
   end)

@@ -1,3 +1,5 @@
+local plugin_config_iterator = require("kong.dao.migrations.helpers").plugin_config_iterator
+
 return {
   {
     name = "2015-08-03-132400_init_oauth2",
@@ -141,7 +143,7 @@ return {
       if err then
         return err
       end
-      
+
       for _, row in ipairs(rows) do
         row.config.global_credentials = true
 
@@ -151,5 +153,55 @@ return {
         end
       end
     end
-  }
+  },
+  {
+    name = "2017-10-19-set_auth_header_name_default",
+    up = function(_, _, dao)
+      for ok, config, update in plugin_config_iterator(dao, "oauth2") do
+        if not ok then
+          return config
+        end
+        if config.auth_header_name == nil then
+          config.auth_header_name = "authorization"
+          local _, err = update(config)
+          if err then
+            return err
+          end
+        end
+      end
+    end,
+    down = function(_, _, dao) end  -- not implemented
+  },
+  {
+    name = "2017-10-11-oauth2_new_refresh_token_ttl_config_value",
+    up = function(_, _, dao)
+      for ok, config, update in plugin_config_iterator(dao, "oauth2") do
+        if not ok then
+          return config
+        end
+        if config.refresh_token_ttl == nil then
+          config.refresh_token_ttl = 1209600
+          local _, err = update(config)
+          if err then
+            return err
+          end
+        end
+      end
+    end,
+    down = function(_, _, dao) end  -- not implemented
+  },
+  {
+     name = "2018-01-09-oauth2_c_add_service_id",
+     up = [[
+       ALTER TABLE oauth2_authorization_codes ADD service_id uuid;
+       CREATE INDEX IF NOT EXISTS ON oauth2_authorization_codes(service_id);
+
+       ALTER TABLE oauth2_tokens ADD service_id uuid;
+       CREATE INDEX IF NOT EXISTS ON oauth2_tokens(service_id);
+     ]],
+     down = [[
+      ALTER TABLE oauth2_authorization_codes DROP service_id;
+      ALTER TABLE oauth2_tokens DROP service_id;
+     ]],
+  },
 }

@@ -41,7 +41,7 @@ _M.dao_insert_values = {
   end
 }
 
-_M.additional_tables = { "ttls", "cluster_events" }
+_M.additional_tables = { "ttls", "cluster_events", "routes", "services" }
 
 function _M.new(kong_config)
   local self = _M.super.new()
@@ -78,12 +78,36 @@ end
 
 function _M:infos()
   return {
+    db_name = "PostgreSQL",
     desc = "database",
-    name = self:clone_query_options().database
+    name = self:clone_query_options().database,
+    version = self.major_minor_version or "unknown",
   }
 end
 
 local do_clean_ttl
+
+function _M.extract_major_minor(release_version)
+  return match(release_version, "^(%d+%.%d+)")
+end
+
+function _M:init()
+  local res, err = self:query("SHOW server_version;")
+  if not res then
+    return nil, Errors.db("could not retrieve server_version: " .. err)
+  end
+
+  if #res < 1 or not res[1].server_version then
+    return nil, Errors.db("could not retrieve server_version")
+  end
+
+  self.major_minor_version = _M.extract_major_minor(res[1].server_version)
+  if not self.major_minor_version then
+    return nil, Errors.db("could not extract major.minor version")
+  end
+
+  return true
+end
 
 function _M:init_worker()
   local ok, err = timer_at(TTL_CLEANUP_INTERVAL, do_clean_ttl, self)

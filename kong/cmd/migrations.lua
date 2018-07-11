@@ -1,5 +1,6 @@
 local conf_loader = require "kong.conf_loader"
 local DAOFactory = require "kong.dao.factory"
+local DB = require "kong.db"
 local log = require "kong.cmd.utils.log"
 local concat = table.concat
 
@@ -28,7 +29,9 @@ end
 
 local function execute(args)
   local conf = assert(conf_loader(args.conf))
-  local dao = assert(DAOFactory.new(conf))
+  local db = DB.new(conf)
+  assert(db:init_connector())
+  local dao = assert(DAOFactory.new(conf, db))
 
   if args.command == "up" then
     assert(dao:run_migrations())
@@ -46,7 +49,9 @@ local function execute(args)
           db_infos.desc, db_infos.name)
     end
   elseif args.command == "reset" then
-    if confirm("Are you sure? This operation is irreversible.") then
+    if args.yes
+      or confirm("Are you sure? This operation is irreversible.")
+    then
       dao:drop_schema()
       log("Schema successfully reset")
     else
@@ -67,6 +72,7 @@ The available commands are:
 
 Options:
  -c,--conf        (optional string) configuration file
+ -y,--yes         assume "yes" to prompts and run non-interactively
 ]]
 
 return {

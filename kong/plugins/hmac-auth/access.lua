@@ -2,7 +2,7 @@ local utils = require "kong.tools.utils"
 local responses = require "kong.tools.responses"
 local constants = require "kong.constants"
 local singletons = require "kong.singletons"
-local crypto = require "crypto"
+local openssl_hmac = require "openssl.hmac"
 local resty_sha256 = require "resty.sha256"
 
 local math_abs = math.abs
@@ -45,13 +45,13 @@ local hmac = {
     return ngx_hmac_sha1(secret, data)
   end,
   ["hmac-sha256"] = function(secret, data)
-    return crypto.hmac.digest("sha256", data, secret, true)
+    return openssl_hmac.new(secret, "sha256"):final(data)
   end,
   ["hmac-sha384"] = function(secret, data)
-    return crypto.hmac.digest("sha384", data, secret, true)
+    return openssl_hmac.new(secret, "sha384"):final(data)
   end,
   ["hmac-sha512"] = function(secret, data)
-    return crypto.hmac.digest("sha512", data, secret, true)
+    return openssl_hmac.new(secret, "sha512"):final(data)
   end
 }
 
@@ -73,8 +73,10 @@ local function validate_params(params, conf)
   -- check enforced headers are present
   if conf.enforce_headers and #conf.enforce_headers >= 1 then
     local enforced_header_set = list_as_set(conf.enforce_headers)
-    for _, header in ipairs(params.hmac_headers) do
-      enforced_header_set[header] = nil
+    if params.hmac_headers then
+      for _, header in ipairs(params.hmac_headers) do
+        enforced_header_set[header] = nil
+      end
     end
     for _, header in ipairs(conf.enforce_headers) do
       if enforced_header_set[header] then
@@ -125,6 +127,8 @@ local function retrieve_hmac_fields(request, headers, header_name, conf)
   return hmac_params
 end
 
+-- plugin assumes the request parameters being used for creating
+-- signature by client are not changed by core or any other plugin
 local function create_hash(request, hmac_params, headers)
   local signing_string = ""
   local hmac_headers = hmac_params.hmac_headers
@@ -137,7 +141,8 @@ local function create_hash(request, hmac_params, headers)
     if not header_value then
       if header == "request-line" then
         -- request-line in hmac headers list
-        local request_line = fmt("%s %s HTTP/%s", ngx.req.get_method(), ngx.var.uri, ngx.req.http_version())
+        local request_line = fmt("%s %s HTTP/%s", ngx.req.get_method(),
+                                 ngx.var.request_uri, ngx.req.http_version())
         signing_string = signing_string .. request_line
       else
         signing_string = signing_string .. header .. ":"
@@ -201,28 +206,24 @@ local function validate_clock_skew(headers, date_header_name, allowed_clock_skew
   return true
 end
 
-local function validate_body(digest_recieved)
-  -- client doesnt want body validation
-  if not digest_recieved then
-    return true
-  end
-
+local function validate_body(digest_received)
   req_read_body()
   local body = req_get_body_data()
-  -- request must have body as client sent a digest header
-  if not body then
-    return false
+
+  if not digest_received then
+    -- if there is no digest and no body, it is ok
+    return not body
   end
 
   local sha256 = resty_sha256:new()
-  sha256:update(body)
+  sha256:update(body or '')
   local digest_created = "SHA-256=" .. ngx_encode_base64(sha256:final())
 
-  return digest_created == digest_recieved
+  return digest_created == digest_received
 end
 
 local function load_consumer_into_memory(consumer_id, anonymous)
-  local result, err = singletons.dao.consumers:find { id = consumer_id }
+  local result, err = singletons.db.consumers:select { id = consumer_id }
   if not result then
     if anonymous and not err then
       err = 'anonymous consumer "' .. consumer_id .. '" not found'
@@ -292,7 +293,7 @@ local function do_authentication(conf)
   end
 
   -- Retrieve consumer
-  local consumer_cache_key = singletons.dao.consumers:cache_key(credential.consumer_id)
+  local consumer_cache_key = singletons.db.consumers:cache_key(credential.consumer_id)
   local consumer, err      = singletons.cache:get(consumer_cache_key, nil,
                                                   load_consumer_into_memory,
                                                   credential.consumer_id)
@@ -318,7 +319,7 @@ function _M.execute(conf)
   if not ok then
     if conf.anonymous ~= "" then
       -- get anonymous user
-      local consumer_cache_key = singletons.dao.consumers:cache_key(conf.anonymous)
+      local consumer_cache_key = singletons.db.consumers:cache_key(conf.anonymous)
       local consumer, err      = singletons.cache:get(consumer_cache_key, nil,
                                                       load_consumer_into_memory,
                                                       conf.anonymous, true)
