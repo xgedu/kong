@@ -20,9 +20,6 @@ addons:
       - libpcre3-dev
       - build-essential
 
-services:
-  - docker
-
 env:
   global:
     - LUAROCKS=2.4.3
