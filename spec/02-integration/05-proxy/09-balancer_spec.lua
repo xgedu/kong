@@ -433,10 +433,7 @@ end
 
 
 local function truncate_relevant_tables(db, dao)
-  db:truncate("services")
-  db:truncate("routes")
-  dao.upstreams:truncate()
-  dao.targets:truncate()
+  db:truncate() -- services, routes, upstreams, targets
   dao.plugins:truncate()
 end
 

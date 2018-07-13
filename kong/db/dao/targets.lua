@@ -1,5 +1,6 @@
 local cjson = require "cjson"
 local balancer = require "kong.runloop.balancer"
+local utils = require "kong.tools.utils"
 
 local _TARGETS = {}
 
@@ -13,7 +14,7 @@ local function clean_history(upstream_pk)
   local cleanup_factor = 10
 
   --cleaning up history, check if it's necessary...
-  local target_history = kong.db.targets:for_upstream(upstream_pk)
+  local target_history = kong.db.targets:for_upstream(upstream_pk, { include_inactive = true })
 
   if target_history then
     -- sort the targets
@@ -72,7 +73,7 @@ end
 
 function _TARGETS:insert(entity)
   clean_history(entity.upstream)
-  return self.super:insert(entity)
+  return self.super.insert(self, entity)
 end
 
 
@@ -90,12 +91,15 @@ function _TARGETS:delete(pk)
 end
 
 
-function _TARGETS:for_upstream(upstream_pk, include_all)
-  local all_targets, err, err_t = self.super:for_upstream(upstream_pk)
+function _TARGETS:for_upstream(upstream_pk, options)
+  options = options or {}
+  local include_inactive = options.include_inactive
+  local include_health = options.include_health
+  local all_targets, err, err_t = self.super.for_upstream(self, upstream_pk)
   if not all_targets then
     return nil, err, err_t
   end
-  if include_all then
+  if include_inactive then
     return all_targets
   end
 
@@ -107,9 +111,9 @@ function _TARGETS:for_upstream(upstream_pk, include_all)
   end
   table.sort(all_targets, sort_by_order)
 
-  local seen   = {}
-  local active = setmetatable({}, cjson.empty_array_mt)
-  local len    = 0
+  local seen           = {}
+  local active_targets = setmetatable({}, cjson.empty_array_mt)
+  local len            = 0
 
   for _, entry in ipairs(all_targets) do
     if not seen[entry.target] then
@@ -121,7 +125,7 @@ function _TARGETS:for_upstream(upstream_pk, include_all)
 
         -- add what we want to send to the client in our array
         len = len + 1
-        active[len] = entry
+        active_targets[len] = entry
 
         -- track that we found this host:port so we only show
         -- the most recent one (kinda)
@@ -130,17 +134,9 @@ function _TARGETS:for_upstream(upstream_pk, include_all)
     end
   end
 
-  return active
-end
-
-
-function _TARGETS:for_upstream_with_health(upstream_pk)
-  local targets, err, err_t = kong.db.targets:for_upstream(upstream_pk)
-  if err then
-    return nil, err, err_t
+  if not include_health then
+    return active_targets
   end
-
-
 
   local health_info
   health_info, err = balancer.get_upstream_health(upstream_pk.id)
@@ -148,7 +144,7 @@ function _TARGETS:for_upstream_with_health(upstream_pk)
     ngx.log(ngx.ERR, "failed getting upstream health: ", err)
   end
 
-  for _, target in ipairs(targets) do
+  for _, target in ipairs(active_targets) do
     -- In case of DNS errors when registering a target,
     -- that error happens inside lua-resty-dns-client
     -- and the end-result is that it just doesn't launch the callback,
@@ -163,8 +159,24 @@ function _TARGETS:for_upstream_with_health(upstream_pk)
                    or  "HEALTHCHECKS_OFF"
   end
 
-  return targets
+  return active_targets
 end
 
+
+function _TARGETS:post_health(upstream, target, is_healthy)
+  local addr = utils.normalize_ip(target.target)
+  local ip, port = utils.format_host(addr.host), addr.port
+  local _, err = balancer.post_health(upstream, ip, port, is_healthy)
+  if err then
+    return nil, err
+  end
+
+  local health = is_healthy and 1 or 0
+  local packet = ("%s|%d|%d|%s|%s"):format(ip, port, health,
+                                           upstream.id,
+                                           upstream.name)
+  local cluster_events = require("kong.singletons").cluster_events
+  cluster_events:broadcast("balancer:post_health", packet)
+end
 
 return _TARGETS

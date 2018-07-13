@@ -85,12 +85,12 @@ do
   local function load_upstream_into_memory(upstream_id)
     log(DEBUG, "fetching upstream: ", tostring(upstream_id))
 
-    local upstream, err = singletons.dao.upstreams:find_all {id = upstream_id}
+    local upstream, err = singletons.db.upstreams:select({id = upstream_id})
     if not upstream then
       return nil, err
     end
 
-    return upstream[1]  -- searched by id, so only 1 row in the returned set
+    return upstream
   end
   _load_upstream_into_memory = load_upstream_into_memory
 
@@ -105,13 +105,13 @@ end
 local fetch_target_history
 do
   ------------------------------------------------------------------------------
-  -- Loads the target history from the DAO.
+  -- Loads the target history from the DB.
   -- @param upstream_id Upstream uuid for which to load the target history
   -- @return The target history array, with target entity tables.
   local function load_targets_into_memory(upstream_id)
     log(DEBUG, "fetching targets for upstream: ",tostring(upstream_id))
 
-    local target_history, err = singletons.dao.targets:find_all {upstream_id = upstream_id}
+    local target_history, err = singletons.db.targets:for_upstream({ id = upstream_id }, { include_inactive = true })
     if not target_history then
       return nil, err
     end
@@ -137,7 +137,7 @@ do
 
 
   ------------------------------------------------------------------------------
-  -- Fetch target history, from cache or the DAO.
+  -- Fetch target history, from cache or the DB.
   -- @param upstream The upstream entity object
   -- @return The target history array, with target entity tables.
   fetch_target_history = function(upstream)
@@ -339,7 +339,7 @@ do
   end
 
   ------------------------------------------------------------------------------
-  -- @param upstream (table) The upstream data
+  -- @param upstream (table) A db.upstreams entity
   -- @param recreate (boolean, optional) create new balancer even if one exists
   -- @param history (table, optional) history of target updates
   -- @param start (integer, optional) from where to start reading the history
@@ -462,17 +462,11 @@ do
   -- and upstream entity tables as values, or nil+error
   local function load_upstreams_dict_into_memory()
     log(DEBUG, "fetching all upstreams")
-    local upstreams, err = singletons.dao.upstreams:find_all()
-    if err then
-      return nil, err
-    end
-
-    -- build a dictionary, indexed by the upstream name
     local upstreams_dict = {}
-    for _, up in ipairs(upstreams) do
+    for up in singletons.db.upstreams:each() do
+    -- build a dictionary, indexed by the upstream name
       upstreams_dict[up.name] = up.id
     end
-
     return upstreams_dict
   end
   _load_upstreams_dict_into_memory = load_upstreams_dict_into_memory
@@ -525,6 +519,7 @@ local function get_balancer(target, no_create)
   -- do not apply here
   local hostname = target.host
 
+
   -- first go and find the upstream object, from cache or the db
   local upstream, err = get_upstream_by_name(hostname)
   if upstream == false then
@@ -558,7 +553,7 @@ end
 -- @param operation "create", "update" or "delete"
 -- @param upstream Target table with `upstream_id` field
 local function on_target_event(operation, target)
-  local upstream_id = target.upstream_id
+  local upstream_id = target.upstream.id
 
   singletons.cache:invalidate_local("balancer:targets:" .. upstream_id)
 
@@ -741,8 +736,6 @@ end
 --
 -- @param target the data structure as defined in `core.access.before` where
 -- it is created.
--- @param silent Do not produce body data (to be used in OpenResty contexts
--- which do not support sending it)
 -- @return true on success, nil+error message+status code otherwise
 local function execute(target)
 
